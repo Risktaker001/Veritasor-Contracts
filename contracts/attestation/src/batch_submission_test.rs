@@ -84,6 +84,7 @@ fn create_batch_item(
         merkle_root: BytesN::from_array(env, root_bytes),
         timestamp,
         version,
+        proof_hash: None,
         expiry_timestamp: None,
     }
 }
@@ -109,7 +110,7 @@ fn test_batch_submit_single_item() {
 
     client.submit_attestations_batch(&items);
 
-    let (root, ts, ver, fee, _) = client
+    let (root, ts, ver, fee, _, _) = client
         .get_attestation(&business, &String::from_str(&env, "2026-01"))
         .unwrap();
     assert_eq!(root, BytesN::from_array(&env, &[1u8; 32]));
@@ -271,6 +272,7 @@ fn test_batch_submit_duplicate_with_existing() {
         &1_700_000_000,
         &1,
         &None,
+        &None,
     );
 
     // Try to batch submit including the same period
@@ -371,6 +373,7 @@ fn test_batch_atomicity_duplicate_prevents_all() {
         &1_700_000_000,
         &1,
         &None,
+        &None,
     );
 
     let mut items = Vec::new(&env);
@@ -468,15 +471,15 @@ fn test_batch_fees_calculated_correctly() {
     assert_eq!(initial_balance - final_balance, 3_000_000);
 
     // Verify each attestation recorded the correct fee
-    let (_, _, _, fee1, _) = t
+    let (_, _, _, fee1, _, _) = t
         .client
         .get_attestation(&business, &String::from_str(&t.env, "2026-01"))
         .unwrap();
-    let (_, _, _, fee2, _) = t
+    let (_, _, _, fee2, _, _) = t
         .client
         .get_attestation(&business, &String::from_str(&t.env, "2026-02"))
         .unwrap();
-    let (_, _, _, fee3, _) = t
+    let (_, _, _, fee3, _, _) = t
         .client
         .get_attestation(&business, &String::from_str(&t.env, "2026-03"))
         .unwrap();
@@ -506,7 +509,7 @@ fn test_batch_fees_with_volume_discounts() {
         let period = String::from_str(&t.env, &std::format!("P-{:04}", i));
         let root = BytesN::from_array(&t.env, &[i as u8; 32]);
         t.client
-            .submit_attestation(&business, &period, &root, &1_700_000_000, &1, &None);
+            .submit_attestation(&business, &period, &root, &1_700_000_000, &1, &None, &None);
     }
 
     // Now batch submit 3 more
@@ -651,7 +654,9 @@ fn test_batch_vs_single_cost_comparison() {
             &1_700_000_000,
             &1,
             &None,
-        );
+            &None,
+            );
+
     }
 
     let balance_after_single = balance(&t.env, &t.token_addr, &business);
@@ -810,6 +815,7 @@ fn test_atomicity_failure_at_first_item_rejects_all() {
         &1_700_000_000,
         &1,
         &None,
+        &None,
     );
 
     let mut items = Vec::new(&env);
@@ -840,6 +846,7 @@ fn test_atomicity_failure_at_last_item_rejects_all() {
         &1_700_017_280,
         &1,
         &None,
+        &None,
     );
 
     let mut items = Vec::new(&env);
@@ -869,6 +876,7 @@ fn test_atomicity_failure_at_middle_item_rejects_all() {
         &BytesN::from_array(&env, &[2u8; 32]),
         &1_700_008_640,
         &1,
+        &None,
         &None,
     );
 
@@ -901,7 +909,9 @@ fn test_atomicity_business_count_unchanged_on_failure() {
             &1_700_000_000,
             &1,
             &None,
-        );
+            &None,
+            );
+
     }
     assert_eq!(client.get_business_count(&business), 3);
 
@@ -952,6 +962,7 @@ fn test_atomicity_cross_business_failure_rejects_all() {
         &1_700_000_000,
         &1,
         &None,
+        &None,
     );
 
     let mut items = Vec::new(&env);
@@ -982,6 +993,7 @@ fn test_atomicity_clean_batch_succeeds_after_failed_batch() {
         &BytesN::from_array(&env, &[1u8; 32]),
         &1_700_000_000,
         &1,
+        &None,
         &None,
     );
 

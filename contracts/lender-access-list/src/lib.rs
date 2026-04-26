@@ -77,8 +77,8 @@ const TOPIC_LENDER_REMOVED: Symbol = symbol_short!("lnd_rem");
 const TOPIC_GOV_GRANTED: Symbol = symbol_short!("gov_add");
 const TOPIC_GOV_REVOKED: Symbol = symbol_short!("gov_del");
 /// Delegated admin events.
-const TOPIC_DELEGATED_ADMIN_GRANTED: Symbol = symbol_short!("del_admin_add");
-const TOPIC_DELEGATED_ADMIN_REVOKED: Symbol = symbol_short!("del_admin_del");
+const TOPIC_DELEGATED_ADMIN_GRANTED: Symbol = symbol_short!("dlg_ad_gr");
+const TOPIC_DELEGATED_ADMIN_REVOKED: Symbol = symbol_short!("dlg_ad_rv");
 
 #[contracttype]
 #[derive(Clone, Debug)]

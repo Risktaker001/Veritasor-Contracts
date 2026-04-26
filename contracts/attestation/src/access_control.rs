@@ -137,7 +137,7 @@ pub fn has_role(env: &Env, account: &Address, role: u32) -> bool {
 
 /// Grant a role to an address (additive operation).
 /// SECURITY: Validates role bitmap and emits event for audit trail
-pub fn grant_role(env: &Env, account: &Address, role: u32) {
+pub fn grant_role(env: &Env, account: &Address, role: u32, changed_by: &Address) {
     // Input validation: role must be a single valid bit or combination
     if !is_valid_role_bitmap(role) || role == 0 {
         panic!("invalid role: must be non-zero and within valid range");
@@ -147,12 +147,12 @@ pub fn grant_role(env: &Env, account: &Address, role: u32) {
     set_roles(env, account, current | role);
 
     // Emit event for audit trail (defined in events module)
-    emit_role_granted(env, account, role);
+    crate::events::emit_role_granted(env, account, role, changed_by);
 }
 
 /// Revoke a role from an address.
 /// SECURITY: Emits event for audit trail even when revoking non-existent role
-pub fn revoke_role(env: &Env, account: &Address, role: u32) {
+pub fn revoke_role(env: &Env, account: &Address, role: u32, changed_by: &Address) {
     // Input validation: role must be a single valid bit or combination
     if !is_valid_role_bitmap(role) || role == 0 {
         panic!("invalid role: must be non-zero and within valid range");
@@ -162,7 +162,19 @@ pub fn revoke_role(env: &Env, account: &Address, role: u32) {
     set_roles(env, account, current & !role);
 
     // Emit event for audit trail
-    emit_role_revoked(env, account, role);
+    crate::events::emit_role_revoked(env, account, role, changed_by);
+}
+
+/// Grant a role by admin.
+pub fn grant_role_by_admin(env: &Env, admin: &Address, account: &Address, role: u32) {
+    require_admin(env, admin);
+    grant_role(env, account, role, admin);
+}
+
+/// Revoke a role by admin.
+pub fn revoke_role_by_admin(env: &Env, admin: &Address, account: &Address, role: u32) {
+    require_admin(env, admin);
+    revoke_role(env, account, role, admin);
 }
 
 /// Get all addresses that hold any role.

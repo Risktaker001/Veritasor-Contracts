@@ -46,8 +46,6 @@ pub enum MultisigKey {
     Approvals(u64),
     /// Next proposal ID counter
     NextProposalId,
-    /// Proposal expiration time in ledger sequence
-    ProposalExpiry(u64),
 }
 
 /// Types of actions that can be proposed
@@ -72,8 +70,6 @@ pub enum ProposalAction {
     UpdateFeeConfig(Address, Address, i128, bool), // (token, collector, base_fee, enabled)
     /// Emergency admin key rotation (bypasses timelock)
     EmergencyRotateAdmin(Address), // new_admin
-    UpdateFeeConfig(Address, Address, i128, bool),
-    EmergencyRotateAdmin(Address),
 }
 
 /// Proposal state
@@ -124,7 +120,6 @@ pub const MAX_OWNERS: u32 = 10;
 // ════════════════════════════════════════════════════════════════════
 
 /// Get the list of multisig owners.
-
 pub fn get_owners(env: &Env) -> Vec<Address> {
     env.storage()
         .instance()
@@ -160,6 +155,10 @@ pub fn rotate_threshold(env: &Env, new_threshold: u32) {
 }
 
 pub fn initialize_multisig(env: &Env, owners: &Vec<Address>, threshold: u32) {
+    assert!(
+        !env.storage().instance().has(&MultisigKey::Owners),
+        "multisig already initialized"
+    );
     set_owners(env, owners);
     env.storage()
         .instance()
@@ -184,6 +183,7 @@ pub fn create_proposal(env: &Env, proposer: &Address, action: ProposalAction) ->
         action,
         proposer: proposer.clone(),
         status: ProposalStatus::Pending,
+        created_at: env.ledger().sequence(),
     };
     env.storage()
         .instance()
@@ -259,24 +259,6 @@ pub fn mark_executed(env: &Env, id: u64) {
         .instance()
         .set(&MultisigKey::Proposal(id), &proposal);
 }
-/// Initialize the multisig with initial owners and threshold.
-pub fn initialize_multisig(env: &Env, owners: &Vec<Address>, threshold: u32) {
-    assert!(
-        !env.storage().instance().has(&MultisigKey::Owners),
-        "multisig already initialized"
-    );
-    assert!(!owners.is_empty(), "must provide at least one owner");
-    assert!(threshold > 0, "threshold must be at least 1");
-    assert!(
-        threshold <= owners.len(),
-        "threshold cannot exceed number of owners"
-    );
-
-    set_owners(env, owners);
-    env.storage()
-        .instance()
-        .set(&MultisigKey::Threshold, &threshold);
-}
 
 /// Check if multisig is initialized.
 pub fn is_multisig_initialized(env: &Env) -> bool {
@@ -291,9 +273,4 @@ pub fn is_multisig_initialized(env: &Env) -> bool {
 pub fn require_owner(env: &Env, caller: &Address) {
     caller.require_auth();
     assert!(is_owner(env, caller), "caller is not a multisig owner");
-}
-
-/// Get the approval count for a proposal.
-pub fn get_approval_count(env: &Env, id: u64) -> u32 {
-    get_approvals(env, id).len()
 }
