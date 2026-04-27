@@ -1,4 +1,27 @@
 #![no_std]
+
+//! # Lender Consumer Contract
+//!
+//! Facilitates revenue verification and dispute management for lenders, serving as a 
+//! semantic "truth gate" for revenue-linked financial modules.
+//!
+//! ## Integration Assumptions
+//!
+//! 1. **Truth Gate Pattern**: This contract aggregates core attestation data with 
+//!    lender-specific signals (disputes, anomalies). Downstream modules (like `revenue-bonds`)
+//!    should ideally query this contract to determine if revenue is "safe" for redemption.
+//!
+//! 2. **Failure Propagation**: A dispute flagged here by a Tier 2+ lender indicates that 
+//!    the underlying revenue data is unreliable. Modules using this data should suspended 
+//!    automated flows until the dispute is resolved or cleared by an admin.
+//!
+//! 3. **Data Integrity**: All revenue stored here is cryptographically bound to the core 
+//!    attestation Merkle root. Verification ensures that `revenue_i128` matches the 
+//!    `SHA256(revenue_be_bytes)` root stored in the core contract.
+//!
+//! 4. **Timing**: There is a latency between attestation submission and lender verification. 
+//!    Downstream modules must define their own "verification window" policies.
+
 use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, String, Vec};
 
 #[cfg(test)]
@@ -47,6 +70,25 @@ pub struct AttestationHealth {
     /// Anomaly flag status.
     pub has_anomaly: bool,
 }
+
+/// Comprehensive health assessment for integration with revenue modules.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RevenueSafetyStatus {
+    /// Has at least one lender submitted and verified this revenue?
+    pub is_verified: bool,
+    /// Is there an active dispute for this period?
+    pub is_disputed: bool,
+    /// Has an anomaly (e.g. negative revenue) been detected?
+    pub has_anomaly: bool,
+    /// Is the underlying core attestation revoked?
+    pub is_revoked: bool,
+    /// Is the underlying core attestation expired?
+    pub is_expired: bool,
+    /// Composite flag: true iff (verified && !disputed && !anomaly && !revoked && !expired).
+    pub is_safe: bool,
+}
+
 
 // Interface for the lender access list contract
 #[soroban_sdk::contractclient(name = "LenderAccessListClient")]
@@ -436,4 +478,36 @@ impl LenderConsumerContract {
         Self::require_admin(&env, &admin);
         env.storage().instance().set(&DataKey::Anomaly(business, period), &false);
     }
+
+    /// Get a comprehensive safety status for integration with revenue modules.
+    ///
+    /// This is the primary API for downstream contracts (e.g. `revenue-bonds`) to 
+    /// determine if a period's revenue is reliable for redemptions or distributions.
+    ///
+    /// # Returns
+    /// A `RevenueSafetyStatus` combining core health and consumer-side signals.
+    pub fn get_revenue_safety_status(
+        env: Env,
+        business: Address,
+        period: String,
+    ) -> RevenueSafetyStatus {
+        let health = Self::get_attestation_health(env, business, period);
+        
+        let is_safe = health.exists 
+            && health.has_revenue 
+            && !health.is_disputed 
+            && !health.has_anomaly 
+            && !health.is_revoked 
+            && !health.is_expired;
+
+        RevenueSafetyStatus {
+            is_verified: health.has_revenue,
+            is_disputed: health.is_disputed,
+            has_anomaly: health.has_anomaly,
+            is_revoked: health.is_revoked,
+            is_expired: health.is_expired,
+            is_safe,
+        }
+    }
 }
+
