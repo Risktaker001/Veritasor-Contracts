@@ -29,6 +29,21 @@
 //!
 //! If no `FeeConfig` has been stored, or if `FeeConfig.enabled == false`,
 //! attestations are free — identical to pre-fee behavior.
+//!
+//! ### Rounding and Precision
+//!
+//! Fee calculations use integer arithmetic and **round towards zero** (truncation).
+//! This ensures that fees are never overcharged beyond the calculated basis,
+//! though it may result in a fee of 0 for extremely small `base_fee` values
+//! combined with high discounts.
+//!
+//! ### Security Invariants
+//!
+//! 1. **Authorization**: All configuration changes (`FeeConfig`, `TierDiscount`, `VolumeBrackets`)
+//!    require administrative authority.
+//! 2. **Integrity**: Discounts are capped at 10,000 bps (100%).
+//! 3. **Consistency**: Volume thresholds must be strictly ascending to ensure
+//!    deterministic bracket selection.
 
 use soroban_sdk::{contracttype, token, Address, Env, Symbol, Val, Vec};
 
@@ -318,9 +333,17 @@ fn get_effective_fee_config(env: &Env) -> Option<FeeConfig> {
 
 /// Pure-arithmetic fee computation (no storage access).
 ///
+/// The formula applies two independent discount factors to the base fee:
+///
 /// ```text
 /// effective = base_fee × (10 000 − tier_bps) × (10 000 − vol_bps) / 100 000 000
 /// ```
+///
+/// ### Mathematical Properties
+///
+/// - **Commutativity**: The order of tier and volume discounts does not affect the result.
+/// - **Bounds**: The result is always in the range `[0, base_fee]`.
+/// - **Rounding**: Truncates toward zero.
 pub fn compute_fee(base_fee: i128, tier_discount_bps: u32, volume_discount_bps: u32) -> i128 {
     let tier_factor = 10_000i128 - tier_discount_bps as i128;
     let vol_factor = 10_000i128 - volume_discount_bps as i128;
