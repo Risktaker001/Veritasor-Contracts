@@ -1431,3 +1431,540 @@ fn nonce_verification_cost_is_constant_regardless_of_actor_count() {
         assert_eq!(get_nonce(&env, &actors[0], channel), 1);
     });
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Block 8 — Well-Known Channel Constants and Classification
+//
+// These tests verify the well-known channel constants and classification
+// helpers that contracts use to maintain consistent channel semantics across
+// the protocol.
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn well_known_channel_constants_have_correct_values() {
+    assert_eq!(CHANNEL_ADMIN, 1);
+    assert_eq!(CHANNEL_BUSINESS, 2);
+    assert_eq!(CHANNEL_MULTISIG, 3);
+    assert_eq!(CHANNEL_GOVERNANCE, 4);
+    assert_eq!(CHANNEL_PROTOCOL, 5);
+    assert_eq!(CHANNEL_CUSTOM_START, 256);
+}
+
+#[test]
+fn is_well_known_channel_classification() {
+    assert!(is_well_known_channel(CHANNEL_ADMIN));
+    assert!(is_well_known_channel(CHANNEL_BUSINESS));
+    assert!(is_well_known_channel(CHANNEL_MULTISIG));
+    assert!(is_well_known_channel(CHANNEL_GOVERNANCE));
+    assert!(is_well_known_channel(CHANNEL_PROTOCOL));
+    
+    assert!(!is_well_known_channel(0));
+    assert!(!is_well_known_channel(6));
+    assert!(!is_well_known_channel(255));
+    assert!(!is_well_known_channel(CHANNEL_CUSTOM_START));
+}
+
+#[test]
+fn is_custom_channel_classification() {
+    assert!(is_custom_channel(CHANNEL_CUSTOM_START));
+    assert!(is_custom_channel(256));
+    assert!(is_custom_channel(257));
+    assert!(is_custom_channel(1000));
+    assert!(is_custom_channel(u32::MAX));
+    
+    assert!(!is_custom_channel(0));
+    assert!(!is_custom_channel(CHANNEL_ADMIN));
+    assert!(!is_custom_channel(CHANNEL_PROTOCOL));
+    assert!(!is_custom_channel(255));
+}
+
+#[test]
+fn admin_and_business_channels_are_isolated() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        // Advance admin channel to 5
+        for i in 0u64..5 {
+            verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, i);
+        }
+        
+        // Advance business channel to 3
+        for i in 0u64..3 {
+            verify_and_increment_nonce(&env, &actor, CHANNEL_BUSINESS, i);
+        }
+        
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_ADMIN), 5);
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_BUSINESS), 3);
+    });
+}
+
+#[test]
+fn all_well_known_channels_are_independent() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    
+    let channels = [
+        CHANNEL_ADMIN,
+        CHANNEL_BUSINESS,
+        CHANNEL_MULTISIG,
+        CHANNEL_GOVERNANCE,
+        CHANNEL_PROTOCOL,
+    ];
+
+    env.as_contract(&contract_id, || {
+        // Advance each channel to a different value
+        for (i, &channel) in channels.iter().enumerate() {
+            for j in 0u64..=(i as u64) {
+                verify_and_increment_nonce(&env, &actor, channel, j);
+            }
+        }
+        
+        // Verify each channel has its expected independent value
+        for (i, &channel) in channels.iter().enumerate() {
+            assert_eq!(
+                get_nonce(&env, &actor, channel),
+                (i + 1) as u64,
+                "channel {} should be at nonce {}",
+                channel,
+                i + 1
+            );
+        }
+    });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Block 9 — Bulk Query Utilities
+//
+// Tests for `get_nonces_for_channels` which allows clients to query multiple
+// channel nonces in a single call.
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn get_nonces_for_channels_returns_correct_values() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    
+    let channels = [CHANNEL_ADMIN, CHANNEL_BUSINESS, CHANNEL_MULTISIG];
+
+    env.as_contract(&contract_id, || {
+        // Advance each channel to a different value
+        verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, 0);
+        verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, 1);
+        
+        verify_and_increment_nonce(&env, &actor, CHANNEL_BUSINESS, 0);
+        verify_and_increment_nonce(&env, &actor, CHANNEL_BUSINESS, 1);
+        verify_and_increment_nonce(&env, &actor, CHANNEL_BUSINESS, 2);
+        verify_and_increment_nonce(&env, &actor, CHANNEL_BUSINESS, 3);
+        
+        // CHANNEL_MULTISIG left at 0
+        
+        let nonces = get_nonces_for_channels(&env, &actor, &channels);
+        assert_eq!(nonces.len(), 3);
+        assert_eq!(nonces.get(0).unwrap(), 2);
+        assert_eq!(nonces.get(1).unwrap(), 4);
+        assert_eq!(nonces.get(2).unwrap(), 0);
+    });
+}
+
+#[test]
+fn get_nonces_for_channels_preserves_order() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    
+    let channels = [CHANNEL_PROTOCOL, CHANNEL_ADMIN, CHANNEL_BUSINESS];
+
+    env.as_contract(&contract_id, || {
+        for i in 0u64..5 {
+            verify_and_increment_nonce(&env, &actor, CHANNEL_PROTOCOL, i);
+        }
+        for i in 0u64..2 {
+            verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, i);
+        }
+        for i in 0u64..7 {
+            verify_and_increment_nonce(&env, &actor, CHANNEL_BUSINESS, i);
+        }
+        
+        let nonces = get_nonces_for_channels(&env, &actor, &channels);
+        assert_eq!(nonces.get(0).unwrap(), 5); // CHANNEL_PROTOCOL
+        assert_eq!(nonces.get(1).unwrap(), 2); // CHANNEL_ADMIN
+        assert_eq!(nonces.get(2).unwrap(), 7); // CHANNEL_BUSINESS
+    });
+}
+
+#[test]
+fn get_nonces_for_channels_with_empty_slice() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    
+    env.as_contract(&contract_id, || {
+        let nonces = get_nonces_for_channels(&env, &actor, &[]);
+        assert_eq!(nonces.len(), 0);
+    });
+}
+
+#[test]
+fn get_nonces_for_channels_with_duplicate_channels() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    
+    let channels = [CHANNEL_ADMIN, CHANNEL_BUSINESS, CHANNEL_ADMIN];
+
+    env.as_contract(&contract_id, || {
+        for i in 0u64..3 {
+            verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, i);
+        }
+        
+        let nonces = get_nonces_for_channels(&env, &actor, &channels);
+        assert_eq!(nonces.len(), 3);
+        assert_eq!(nonces.get(0).unwrap(), 3);
+        assert_eq!(nonces.get(1).unwrap(), 0);
+        assert_eq!(nonces.get(2).unwrap(), 3); // Same as first
+    });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Block 10 — Reset Utilities and Replay-After-Reset
+//
+// Tests for `reset_nonce` and `reset_nonces_for_channels`, including security
+// implications of resetting nonces.
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn reset_nonce_clears_to_zero() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    let channel = CHANNEL_ADMIN;
+
+    env.as_contract(&contract_id, || {
+        // Advance to 5
+        for i in 0u64..5 {
+            verify_and_increment_nonce(&env, &actor, channel, i);
+        }
+        assert_eq!(get_nonce(&env, &actor, channel), 5);
+        
+        // Reset
+        reset_nonce(&env, &actor, channel);
+        assert_eq!(get_nonce(&env, &actor, channel), 0);
+        
+        // Can now use nonce 0 again
+        verify_and_increment_nonce(&env, &actor, channel, 0);
+        assert_eq!(get_nonce(&env, &actor, channel), 1);
+    });
+}
+
+#[test]
+fn reset_nonce_enables_replay_of_previously_used_nonces() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    let channel = CHANNEL_BUSINESS;
+
+    env.as_contract(&contract_id, || {
+        // Use nonce 0
+        verify_and_increment_nonce(&env, &actor, channel, 0);
+        assert_eq!(get_nonce(&env, &actor, channel), 1);
+        
+        // Replay of 0 fails
+        let replay = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_and_increment_nonce(&env, &actor, channel, 0);
+        }));
+        assert!(replay.is_err());
+        
+        // Reset
+        reset_nonce(&env, &actor, channel);
+        
+        // Now nonce 0 can be used again
+        verify_and_increment_nonce(&env, &actor, channel, 0);
+        assert_eq!(get_nonce(&env, &actor, channel), 1);
+    });
+}
+
+#[test]
+fn reset_nonce_only_affects_specified_channel() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        // Advance both channels
+        for i in 0u64..3 {
+            verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, i);
+            verify_and_increment_nonce(&env, &actor, CHANNEL_BUSINESS, i);
+        }
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_ADMIN), 3);
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_BUSINESS), 3);
+        
+        // Reset only admin
+        reset_nonce(&env, &actor, CHANNEL_ADMIN);
+        
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_ADMIN), 0);
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_BUSINESS), 3);
+    });
+}
+
+#[test]
+fn reset_nonces_for_channels_bulk_reset() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    
+    let channels = [CHANNEL_ADMIN, CHANNEL_BUSINESS, CHANNEL_MULTISIG];
+
+    env.as_contract(&contract_id, || {
+        // Advance all channels
+        for &channel in &channels {
+            for i in 0u64..5 {
+                verify_and_increment_nonce(&env, &actor, channel, i);
+            }
+        }
+        
+        // Verify all at 5
+        for &channel in &channels {
+            assert_eq!(get_nonce(&env, &actor, channel), 5);
+        }
+        
+        // Bulk reset
+        reset_nonces_for_channels(&env, &actor, &channels);
+        
+        // All should be 0
+        for &channel in &channels {
+            assert_eq!(get_nonce(&env, &actor, channel), 0);
+        }
+    });
+}
+
+#[test]
+fn reset_nonces_for_channels_preserves_other_channels() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        // Advance all well-known channels
+        for i in 0u64..3 {
+            verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, i);
+            verify_and_increment_nonce(&env, &actor, CHANNEL_BUSINESS, i);
+            verify_and_increment_nonce(&env, &actor, CHANNEL_MULTISIG, i);
+            verify_and_increment_nonce(&env, &actor, CHANNEL_GOVERNANCE, i);
+            verify_and_increment_nonce(&env, &actor, CHANNEL_PROTOCOL, i);
+        }
+        
+        // Reset only admin and business
+        reset_nonces_for_channels(&env, &actor, &[CHANNEL_ADMIN, CHANNEL_BUSINESS]);
+        
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_ADMIN), 0);
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_BUSINESS), 0);
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_MULTISIG), 3);
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_GOVERNANCE), 3);
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_PROTOCOL), 3);
+    });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Block 11 — Edge Cases: Nonce Wraparound, Migration, Concurrent Updates
+//
+// Tests for edge cases including nonce wraparound assumptions, migration
+// scenarios, and concurrent update patterns.
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+#[should_panic(expected = "nonce overflow")]
+fn nonce_wraparound_at_max_panics() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    let channel = CHANNEL_ADMIN;
+
+    env.as_contract(&contract_id, || {
+        use crate::replay_protection::ReplayKey;
+        env.storage()
+            .instance()
+            .set(&ReplayKey::Nonce(actor.clone(), channel), &u64::MAX);
+        
+        verify_and_increment_nonce(&env, &actor, channel, u64::MAX);
+    });
+}
+
+#[test]
+fn nonce_near_max_can_be_used() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    let channel = CHANNEL_BUSINESS;
+
+    env.as_contract(&contract_id, || {
+        use crate::replay_protection::ReplayKey;
+        let near_max = u64::MAX - 5;
+        env.storage()
+            .instance()
+            .set(&ReplayKey::Nonce(actor.clone(), channel), &near_max);
+        
+        // Can use nonces near max
+        for i in 0..5 {
+            verify_and_increment_nonce(&env, &actor, channel, near_max + i);
+        }
+        assert_eq!(get_nonce(&env, &actor, channel), u64::MAX);
+    });
+}
+
+#[test]
+fn migration_via_reset_and_new_sequence() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let old_actor = Address::generate(&env);
+    let new_actor = Address::generate(&env);
+    let channel = CHANNEL_ADMIN;
+
+    env.as_contract(&contract_id, || {
+        // Old actor has used nonces 0-9
+        for i in 0u64..10 {
+            verify_and_increment_nonce(&env, &old_actor, channel, i);
+        }
+        assert_eq!(get_nonce(&env, &old_actor, channel), 10);
+        
+        // Migration: new actor starts fresh
+        assert_eq!(get_nonce(&env, &new_actor, channel), 0);
+        verify_and_increment_nonce(&env, &new_actor, channel, 0);
+        assert_eq!(get_nonce(&env, &new_actor, channel), 1);
+        
+        // Old actor's nonces are unchanged
+        assert_eq!(get_nonce(&env, &old_actor, channel), 10);
+    });
+}
+
+#[test]
+fn concurrent_updates_different_actors_same_channel() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor_a = Address::generate(&env);
+    let actor_b = Address::generate(&env);
+    let actor_c = Address::generate(&env);
+    let channel = CHANNEL_BUSINESS;
+
+    env.as_contract(&contract_id, || {
+        // Simulate concurrent updates by interleaving operations
+        verify_and_increment_nonce(&env, &actor_a, channel, 0);
+        verify_and_increment_nonce(&env, &actor_b, channel, 0);
+        verify_and_increment_nonce(&env, &actor_c, channel, 0);
+        
+        verify_and_increment_nonce(&env, &actor_a, channel, 1);
+        verify_and_increment_nonce(&env, &actor_b, channel, 1);
+        
+        verify_and_increment_nonce(&env, &actor_a, channel, 2);
+        verify_and_increment_nonce(&env, &actor_c, channel, 1);
+        
+        // Each actor has independent state
+        assert_eq!(get_nonce(&env, &actor_a, channel), 3);
+        assert_eq!(get_nonce(&env, &actor_b, channel), 2);
+        assert_eq!(get_nonce(&env, &actor_c, channel), 2);
+    });
+}
+
+#[test]
+fn concurrent_updates_same_actor_different_channels() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        // Simulate concurrent updates across channels
+        verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, 0);
+        verify_and_increment_nonce(&env, &actor, CHANNEL_BUSINESS, 0);
+        verify_and_increment_nonce(&env, &actor, CHANNEL_MULTISIG, 0);
+        
+        verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, 1);
+        verify_and_increment_nonce(&env, &actor, CHANNEL_BUSINESS, 1);
+        
+        verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, 2);
+        verify_and_increment_nonce(&env, &actor, CHANNEL_MULTISIG, 1);
+        
+        // Each channel has independent state
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_ADMIN), 3);
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_BUSINESS), 2);
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_MULTISIG), 2);
+    });
+}
+
+#[test]
+fn channel_zero_is_valid_but_not_well_known() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    let channel = 0u32;
+
+    assert!(!is_well_known_channel(channel));
+    assert!(!is_custom_channel(channel));
+
+    env.as_contract(&contract_id, || {
+        // Channel 0 can still be used for nonce tracking
+        verify_and_increment_nonce(&env, &actor, channel, 0);
+        assert_eq!(get_nonce(&env, &actor, channel), 1);
+    });
+}
+
+#[test]
+fn reserved_range_channels_are_neither_well_known_nor_custom() {
+    // Channels 6-255 are reserved (neither well-known nor custom)
+    for channel in 6..=255 {
+        assert!(!is_well_known_channel(channel));
+        assert!(!is_custom_channel(channel));
+    }
+}
+
+#[test]
+fn custom_channel_isolation_from_well_known() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    let custom_channel = CHANNEL_CUSTOM_START;
+
+    env.as_contract(&contract_id, || {
+        // Advance well-known channels
+        for i in 0u64..3 {
+            verify_and_increment_nonce(&env, &actor, CHANNEL_ADMIN, i);
+        }
+        
+        // Advance custom channel
+        for i in 0u64..5 {
+            verify_and_increment_nonce(&env, &actor, custom_channel, i);
+        }
+        
+        // Both are independent
+        assert_eq!(get_nonce(&env, &actor, CHANNEL_ADMIN), 3);
+        assert_eq!(get_nonce(&env, &actor, custom_channel), 5);
+    });
+}
+
+#[test]
+fn multiple_custom_channels_are_independent() {
+    let env = Env::default();
+    let contract_id = env.register(ReplayProtectionTestContract, ());
+    let actor = Address::generate(&env);
+    let custom1 = CHANNEL_CUSTOM_START;
+    let custom2 = CHANNEL_CUSTOM_START + 1;
+    let custom3 = CHANNEL_CUSTOM_START + 100;
+
+    env.as_contract(&contract_id, || {
+        for i in 0u64..2 {
+            verify_and_increment_nonce(&env, &actor, custom1, i);
+        }
+        for i in 0u64..4 {
+            verify_and_increment_nonce(&env, &actor, custom2, i);
+        }
+        for i in 0u64..6 {
+            verify_and_increment_nonce(&env, &actor, custom3, i);
+        }
+        
+        assert_eq!(get_nonce(&env, &actor, custom1), 2);
+        assert_eq!(get_nonce(&env, &actor, custom2), 4);
+        assert_eq!(get_nonce(&env, &actor, custom3), 6);
+    });
+}
