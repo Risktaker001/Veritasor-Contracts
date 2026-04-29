@@ -40,6 +40,26 @@
 //! | `BusinessSuspended`         | `biz_sus`      | `business`        |
 //! | `BusinessReactivated`       | `biz_rea`      | `business`        |
 //!
+//! ## Indexer Compatibility Contract
+//!
+//! The attestation lifecycle events in this module (`att_sub`, `att_rev`,
+//! `att_mig`) are a stable wire contract for off-chain indexers.
+//!
+//! Compatibility rules:
+//! - Topic symbols are stable identifiers and MUST NOT be repurposed.
+//! - Field order inside `#[contracttype]` structs is stable.
+//! - Backwards-compatible additions are append-only optional fields.
+//! - Removing, renaming, reordering, or changing field types is breaking.
+//!
+//! Breaking-change policy:
+//! - Increment `EVENT_SCHEMA_VERSION` for any breaking event-schema change.
+//! - Update indexer-facing documentation in `docs/attestation-events-indexer.md`.
+//! - Preserve old historical events; never rewrite or reinterpret ledger history.
+//!
+//! Duplicate-handling note for indexers:
+//! - Failed submissions/migrations do not emit attestation lifecycle events.
+//! - Replays are prevented via nonce checks at contract entrypoints.
+//!
 //! ## Security Notes
 //!
 //! - Only contract-internal logic calls these functions; no external caller can
@@ -59,6 +79,9 @@ use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Symb
 /// Increment this constant whenever a breaking field change is made to *any*
 /// event struct in this module so that off-chain indexers can detect and
 /// handle schema changes.
+///
+/// Non-breaking changes (for example, appending new optional fields at the
+/// end of a struct) MUST NOT increment this version.
 pub const EVENT_SCHEMA_VERSION: u32 = 1;
 
 // ════════════════════════════════════════════════════════════════════
@@ -120,6 +143,9 @@ pub const TOPIC_BIZ_REACTIVATE: Symbol = symbol_short!("biz_rea");
 /// Emitted once per successful `submit_attestation` call.  The
 /// `proof_hash` and `expiry_timestamp` fields are optional and will
 /// be `None` when the submitter did not provide them.
+///
+/// This struct is an indexer-facing wire contract; field order and types are
+/// part of compatibility guarantees.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct AttestationSubmittedEvent {
@@ -145,6 +171,9 @@ pub struct AttestationSubmittedEvent {
 ///
 /// Emitted once per successful `revoke_attestation` call.  The
 /// `reason` field is a free-form string supplied by the revoker.
+///
+/// This struct is an indexer-facing wire contract; field order and types are
+/// part of compatibility guarantees.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct AttestationRevokedEvent {
@@ -162,6 +191,9 @@ pub struct AttestationRevokedEvent {
 ///
 /// Contains both old and new values so indexers can reconstruct the
 /// full audit trail without additional storage reads.
+///
+/// This struct is an indexer-facing wire contract; field order and types are
+/// part of compatibility guarantees.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct AttestationMigratedEvent {

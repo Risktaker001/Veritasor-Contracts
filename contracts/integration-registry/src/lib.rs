@@ -109,6 +109,13 @@ pub struct Provider {
     pub registered_by: Address,
 }
 
+/// Maximum allowed bytes for provider metadata fields.
+pub const MAX_PROVIDER_METADATA_NAME_BYTES: u32 = 64;
+pub const MAX_PROVIDER_METADATA_DESCRIPTION_BYTES: u32 = 512;
+pub const MAX_PROVIDER_METADATA_API_VERSION_BYTES: u32 = 32;
+pub const MAX_PROVIDER_METADATA_DOCS_URL_BYTES: u32 = 256;
+pub const MAX_PROVIDER_METADATA_CATEGORY_BYTES: u32 = 32;
+
 // ════════════════════════════════════════════════════════════════════
 //  Event Topics
 // ════════════════════════════════════════════════════════════════════
@@ -264,7 +271,7 @@ impl IntegrationRegistryContract {
             .instance()
             .get(&DataKey::NamespaceList)
             .unwrap_or_else(|| Vec::new(&env));
-        
+
         // Ensure uniqueness in list (optional, but good practice)
         let mut exists = false;
         for i in 0..namespaces.len() {
@@ -275,7 +282,9 @@ impl IntegrationRegistryContract {
         }
         if !exists {
             namespaces.push_back(namespace.clone());
-            env.storage().instance().set(&DataKey::NamespaceList, &namespaces);
+            env.storage()
+                .instance()
+                .set(&DataKey::NamespaceList, &namespaces);
         }
 
         // Emit event
@@ -284,7 +293,8 @@ impl IntegrationRegistryContract {
             account: initial_owner,
             changed_by: caller,
         };
-        env.events().publish((symbol_short!("ns_reg"), namespace), event);
+        env.events()
+            .publish((symbol_short!("ns_reg"), namespace), event);
     }
 
     /// Grant ownership of a namespace to an address.
@@ -307,9 +317,10 @@ impl IntegrationRegistryContract {
             nonce,
         );
 
-        env.storage()
-            .instance()
-            .set(&DataKey::NamespaceGovernance(namespace.clone(), account.clone()), &true);
+        env.storage().instance().set(
+            &DataKey::NamespaceGovernance(namespace.clone(), account.clone()),
+            &true,
+        );
 
         // Emit event
         let event = NamespaceEvent {
@@ -317,7 +328,8 @@ impl IntegrationRegistryContract {
             account,
             changed_by: caller,
         };
-        env.events().publish((symbol_short!("ns_grnt"), namespace), event);
+        env.events()
+            .publish((symbol_short!("ns_grnt"), namespace), event);
     }
 
     /// Revoke ownership of a namespace from an address.
@@ -340,9 +352,10 @@ impl IntegrationRegistryContract {
             nonce,
         );
 
-        env.storage()
-            .instance()
-            .set(&DataKey::NamespaceGovernance(namespace.clone(), account.clone()), &false);
+        env.storage().instance().set(
+            &DataKey::NamespaceGovernance(namespace.clone(), account.clone()),
+            &false,
+        );
 
         // Emit event
         let event = NamespaceEvent {
@@ -350,7 +363,8 @@ impl IntegrationRegistryContract {
             account,
             changed_by: caller,
         };
-        env.events().publish((symbol_short!("ns_rvk"), namespace), event);
+        env.events()
+            .publish((symbol_short!("ns_rvk"), namespace), event);
     }
 
     // ── Provider Registration ───────────────────────────────────────
@@ -363,6 +377,10 @@ impl IntegrationRegistryContract {
     /// * `caller` - Must have governance role
     /// * `id` - Unique provider identifier (e.g., "stripe")
     /// * `metadata` - Provider metadata
+    ///
+    /// Metadata is validated for bounded storage and unambiguous formatting:
+    /// all fields must be non-empty, within max byte limits, and must not
+    /// have leading or trailing ASCII whitespace.
     ///
     /// Replay protection: uses the caller address and `NONCE_CHANNEL_GOVERNANCE`.
     pub fn register_provider(
@@ -380,6 +398,7 @@ impl IntegrationRegistryContract {
             Self::NONCE_CHANNEL_GOVERNANCE,
             nonce,
         );
+        Self::validate_provider_metadata(&metadata);
 
         let key = DataKey::Provider(namespace.clone(), id.clone());
         if env.storage().instance().has(&key) {
@@ -405,9 +424,10 @@ impl IntegrationRegistryContract {
             .get(&DataKey::NamespaceProviderList(namespace.clone()))
             .unwrap_or_else(|| Vec::new(&env));
         providers.push_back(id.clone());
-        env.storage()
-            .instance()
-            .set(&DataKey::NamespaceProviderList(namespace.clone()), &providers);
+        env.storage().instance().set(
+            &DataKey::NamespaceProviderList(namespace.clone()),
+            &providers,
+        );
 
         // Emit event
         let event = ProviderEvent {
@@ -468,7 +488,13 @@ impl IntegrationRegistryContract {
     /// Deprecated providers are still valid but discouraged for new attestations.
     ///
     /// Replay protection: uses the caller address and `NONCE_CHANNEL_GOVERNANCE`.
-    pub fn deprecate_provider(env: Env, caller: Address, namespace: String, id: String, nonce: u64) {
+    pub fn deprecate_provider(
+        env: Env,
+        caller: Address,
+        namespace: String,
+        id: String,
+        nonce: u64,
+    ) {
         Self::require_namespace_governance(&env, &namespace, &caller);
         replay_protection::verify_and_increment_nonce(
             &env,
@@ -549,6 +575,9 @@ impl IntegrationRegistryContract {
     ///
     /// Can be called on any provider regardless of status.
     ///
+    /// Metadata validation uses the same bounded and ambiguity-resistant
+    /// rules as [`register_provider`].
+    ///
     /// Replay protection: uses the caller address and `NONCE_CHANNEL_GOVERNANCE`.
     pub fn update_metadata(
         env: Env,
@@ -565,6 +594,7 @@ impl IntegrationRegistryContract {
             Self::NONCE_CHANNEL_GOVERNANCE,
             nonce,
         );
+        Self::validate_provider_metadata(&metadata);
 
         let key = DataKey::Provider(namespace.clone(), id.clone());
         let mut provider: Provider = env
@@ -591,7 +621,9 @@ impl IntegrationRegistryContract {
 
     /// Get a provider by ID and namespace.
     pub fn get_provider(env: Env, namespace: String, id: String) -> Option<Provider> {
-        env.storage().instance().get(&DataKey::Provider(namespace, id))
+        env.storage()
+            .instance()
+            .get(&DataKey::Provider(namespace, id))
     }
 
     /// Check if a provider is enabled.
@@ -703,7 +735,11 @@ impl IntegrationRegistryContract {
     /// Returns true if the address is a namespace owner, global governance, or admin.
     pub fn has_namespace_governance(env: Env, namespace: String, account: Address) -> bool {
         // Admin has global access
-        if let Some(admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+        if let Some(admin) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+        {
             if account == admin {
                 return true;
             }
@@ -753,11 +789,74 @@ impl IntegrationRegistryContract {
     }
 
     fn is_admin(env: &Env, account: &Address) -> bool {
-        if let Some(admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+        if let Some(admin) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+        {
             account == &admin
         } else {
             false
         }
+    }
+
+    fn validate_provider_metadata(metadata: &ProviderMetadata) {
+        Self::validate_metadata_field(
+            &metadata.name,
+            MAX_PROVIDER_METADATA_NAME_BYTES,
+            "provider name cannot be empty",
+            "provider name exceeds max bytes",
+            "provider name has leading or trailing whitespace",
+        );
+        Self::validate_metadata_field(
+            &metadata.description,
+            MAX_PROVIDER_METADATA_DESCRIPTION_BYTES,
+            "provider description cannot be empty",
+            "provider description exceeds max bytes",
+            "provider description has leading or trailing whitespace",
+        );
+        Self::validate_metadata_field(
+            &metadata.api_version,
+            MAX_PROVIDER_METADATA_API_VERSION_BYTES,
+            "provider api version cannot be empty",
+            "provider api version exceeds max bytes",
+            "provider api version has leading or trailing whitespace",
+        );
+        Self::validate_metadata_field(
+            &metadata.docs_url,
+            MAX_PROVIDER_METADATA_DOCS_URL_BYTES,
+            "provider docs url cannot be empty",
+            "provider docs url exceeds max bytes",
+            "provider docs url has leading or trailing whitespace",
+        );
+        Self::validate_metadata_field(
+            &metadata.category,
+            MAX_PROVIDER_METADATA_CATEGORY_BYTES,
+            "provider category cannot be empty",
+            "provider category exceeds max bytes",
+            "provider category has leading or trailing whitespace",
+        );
+    }
+
+    fn validate_metadata_field(
+        field: &String,
+        max_len: u32,
+        empty_msg: &str,
+        max_msg: &str,
+        whitespace_msg: &str,
+    ) {
+        let len = field.len();
+        assert!(len > 0, "{}", empty_msg);
+        assert!(len <= max_len, "{}", max_msg);
+
+        let bytes = field.as_bytes();
+        let first = bytes.get(0).unwrap();
+        let last = bytes.get(len - 1).unwrap();
+        assert!(
+            !first.is_ascii_whitespace() && !last.is_ascii_whitespace(),
+            "{}",
+            whitespace_msg
+        );
     }
 
     /// Get the current nonce for a given `(actor, channel)` pair.

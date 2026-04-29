@@ -8,18 +8,23 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env, String};
 
 /// Helper: register the contract and return a client.
-fn setup() -> (Env, IntegrationRegistryContractClient<'static>, Address, String) {
+fn setup() -> (
+    Env,
+    IntegrationRegistryContractClient<'static>,
+    Address,
+    String,
+) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(IntegrationRegistryContract, ());
     let client = IntegrationRegistryContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     client.initialize(&admin, &0u64);
-    
+
     // Register a default 'global' namespace
     let namespace = String::from_str(&env, "global");
     client.register_namespace(&admin, &namespace, &admin, &0u64);
-    
+
     (env, client, admin, namespace)
 }
 
@@ -32,6 +37,37 @@ fn sample_metadata(env: &Env) -> ProviderMetadata {
         docs_url: String::from_str(env, "https://stripe.com/docs"),
         category: String::from_str(env, "payment"),
     }
+}
+
+/// Helper: create metadata with explicit byte lengths for each field.
+fn metadata_with_lengths(
+    env: &Env,
+    name_len: u32,
+    description_len: u32,
+    api_version_len: u32,
+    docs_url_len: u32,
+    category_len: u32,
+) -> ProviderMetadata {
+    ProviderMetadata {
+        name: String::from_str(env, &"n".repeat(name_len as usize)),
+        description: String::from_str(env, &"d".repeat(description_len as usize)),
+        api_version: String::from_str(env, &"v".repeat(api_version_len as usize)),
+        docs_url: String::from_str(env, &"u".repeat(docs_url_len as usize)),
+        category: String::from_str(env, &"c".repeat(category_len as usize)),
+    }
+}
+
+/// Helper: provision a namespace owned by a dedicated non-admin account.
+fn setup_namespace_owner(
+    env: &Env,
+    client: &IntegrationRegistryContractClient<'static>,
+    admin: &Address,
+    namespace: &str,
+) -> (Address, String) {
+    let owner = Address::generate(env);
+    let ns = String::from_str(env, namespace);
+    client.register_namespace(admin, &ns, &owner, &1u64);
+    (owner, ns)
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -210,7 +246,7 @@ fn test_update_metadata() {
     let id = String::from_str(&env, "stripe");
     let metadata = sample_metadata(&env);
 
-    client.register_provider(&admin, &ns, &id, &metadata, &0u64);
+    client.register_provider(&admin, &ns, &id, &metadata, &1u64);
 
     let new_metadata = ProviderMetadata {
         name: String::from_str(&env, "Stripe v2"),
@@ -220,7 +256,7 @@ fn test_update_metadata() {
         category: String::from_str(&env, "payment"),
     };
 
-    client.update_metadata(&admin, &ns, &id, &new_metadata, &1u64);
+    client.update_metadata(&admin, &ns, &id, &new_metadata, &2u64);
 
     let provider = client.get_provider(&ns, &id).unwrap();
     assert_eq!(provider.metadata.name, new_metadata.name);
@@ -230,11 +266,107 @@ fn test_update_metadata() {
 #[test]
 #[should_panic(expected = "provider not found")]
 fn test_update_nonexistent_provider_panics() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, ns) = setup();
     let id = String::from_str(&env, "nonexistent");
     let metadata = sample_metadata(&env);
 
-    client.update_metadata(&admin, &id, &metadata, &0u64);
+    client.update_metadata(&admin, &ns, &id, &metadata, &1u64);
+}
+
+#[test]
+fn test_register_provider_accepts_metadata_at_max_bounds() {
+    let (env, client, admin, _ns) = setup();
+    let (owner, ns) = setup_namespace_owner(&env, &client, &admin, "metadata_bounds_ok");
+    let id = String::from_str(&env, "stripe");
+    let metadata = metadata_with_lengths(
+        &env,
+        MAX_PROVIDER_METADATA_NAME_BYTES,
+        MAX_PROVIDER_METADATA_DESCRIPTION_BYTES,
+        MAX_PROVIDER_METADATA_API_VERSION_BYTES,
+        MAX_PROVIDER_METADATA_DOCS_URL_BYTES,
+        MAX_PROVIDER_METADATA_CATEGORY_BYTES,
+    );
+
+    client.register_provider(&owner, &ns, &id, &metadata, &0u64);
+
+    let provider = client.get_provider(&ns, &id).unwrap();
+    assert_eq!(
+        provider.metadata.name.len(),
+        MAX_PROVIDER_METADATA_NAME_BYTES
+    );
+    assert_eq!(
+        provider.metadata.description.len(),
+        MAX_PROVIDER_METADATA_DESCRIPTION_BYTES
+    );
+    assert_eq!(
+        provider.metadata.api_version.len(),
+        MAX_PROVIDER_METADATA_API_VERSION_BYTES
+    );
+    assert_eq!(
+        provider.metadata.docs_url.len(),
+        MAX_PROVIDER_METADATA_DOCS_URL_BYTES
+    );
+    assert_eq!(
+        provider.metadata.category.len(),
+        MAX_PROVIDER_METADATA_CATEGORY_BYTES
+    );
+}
+
+#[test]
+#[should_panic(expected = "provider description exceeds max bytes")]
+fn test_register_provider_rejects_oversized_description() {
+    let (env, client, admin, _ns) = setup();
+    let (owner, ns) = setup_namespace_owner(&env, &client, &admin, "metadata_desc_oversize");
+    let id = String::from_str(&env, "stripe");
+    let metadata = metadata_with_lengths(
+        &env,
+        6,
+        MAX_PROVIDER_METADATA_DESCRIPTION_BYTES + 1,
+        2,
+        18,
+        7,
+    );
+
+    client.register_provider(&owner, &ns, &id, &metadata, &0u64);
+}
+
+#[test]
+#[should_panic(expected = "provider name cannot be empty")]
+fn test_register_provider_rejects_empty_name() {
+    let (env, client, admin, _ns) = setup();
+    let (owner, ns) = setup_namespace_owner(&env, &client, &admin, "metadata_name_empty");
+    let id = String::from_str(&env, "stripe");
+    let mut metadata = sample_metadata(&env);
+    metadata.name = String::from_str(&env, "");
+
+    client.register_provider(&owner, &ns, &id, &metadata, &0u64);
+}
+
+#[test]
+#[should_panic(expected = "provider category has leading or trailing whitespace")]
+fn test_register_provider_rejects_category_with_edge_whitespace() {
+    let (env, client, admin, _ns) = setup();
+    let (owner, ns) = setup_namespace_owner(&env, &client, &admin, "metadata_category_ws");
+    let id = String::from_str(&env, "stripe");
+    let mut metadata = sample_metadata(&env);
+    metadata.category = String::from_str(&env, " payment");
+
+    client.register_provider(&owner, &ns, &id, &metadata, &0u64);
+}
+
+#[test]
+#[should_panic(expected = "provider docs url exceeds max bytes")]
+fn test_update_metadata_rejects_oversized_docs_url() {
+    let (env, client, admin, _ns) = setup();
+    let (owner, ns) = setup_namespace_owner(&env, &client, &admin, "metadata_docs_oversize");
+    let id = String::from_str(&env, "stripe");
+    let metadata = sample_metadata(&env);
+
+    client.register_provider(&owner, &ns, &id, &metadata, &0u64);
+
+    let updated =
+        metadata_with_lengths(&env, 6, 24, 2, MAX_PROVIDER_METADATA_DOCS_URL_BYTES + 1, 7);
+    client.update_metadata(&owner, &ns, &id, &updated, &1u64);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -311,13 +443,19 @@ fn test_get_status() {
     assert!(client.get_status(&ns, &id).is_none());
 
     client.register_provider(&admin, &ns, &id, &metadata, &0u64);
-    assert_eq!(client.get_status(&ns, &id), Some(ProviderStatus::Registered));
+    assert_eq!(
+        client.get_status(&ns, &id),
+        Some(ProviderStatus::Registered)
+    );
 
     client.enable_provider(&admin, &ns, &id, &1u64);
     assert_eq!(client.get_status(&ns, &id), Some(ProviderStatus::Enabled));
 
     client.deprecate_provider(&admin, &ns, &id, &2u64);
-    assert_eq!(client.get_status(&ns, &id), Some(ProviderStatus::Deprecated));
+    assert_eq!(
+        client.get_status(&ns, &id),
+        Some(ProviderStatus::Deprecated)
+    );
 
     client.disable_provider(&admin, &ns, &id, &3u64);
     assert_eq!(client.get_status(&ns, &id), Some(ProviderStatus::Disabled));
@@ -398,22 +536,22 @@ fn test_grant_governance_non_admin_panics() {
 #[test]
 fn test_namespace_isolation() {
     let (env, client, admin, _ns) = setup();
-    
+
     let ns_a = String::from_str(&env, "ns_a");
     let ns_b = String::from_str(&env, "ns_b");
     let owner_a = Address::generate(&env);
     let owner_b = Address::generate(&env);
-    
+
     client.register_namespace(&admin, &ns_a, &owner_a, &1u64);
     client.register_namespace(&admin, &ns_b, &owner_b, &2u64);
-    
+
     let id = String::from_str(&env, "provider");
     let metadata = sample_metadata(&env);
-    
+
     // owner_a can register in ns_a
     client.register_provider(&owner_a, &ns_a, &id, &metadata, &0u64);
     assert!(client.get_provider(&ns_a, &id).is_some());
-    
+
     // owner_a CANNOT register in ns_b
     let res = env.try_invoke_contract::<()>(
         &client.contract_id,
@@ -421,15 +559,15 @@ fn test_namespace_isolation() {
         (&owner_a, &ns_b, &id, &metadata, &1u64).into_val(&env),
     );
     assert!(res.is_err());
-    
+
     // owner_b can register same ID in ns_b
     client.register_provider(&owner_b, &ns_b, &id, &metadata, &0u64);
     assert!(client.get_provider(&ns_b, &id).is_some());
-    
+
     // owner_a can update ns_a
     client.enable_provider(&owner_a, &ns_a, &id, &2u64);
     assert!(client.is_enabled(&ns_a, &id));
-    
+
     // owner_a CANNOT update ns_b
     let res = env.try_invoke_contract::<()>(
         &client.contract_id,
@@ -445,10 +583,10 @@ fn test_admin_override() {
     let ns = String::from_str(&env, "private");
     let owner = Address::generate(&env);
     client.register_namespace(&admin, &ns, &owner, &1u64);
-    
+
     let id = String::from_str(&env, "provider");
     let metadata = sample_metadata(&env);
-    
+
     // Admin can register in any namespace without being explicit owner
     client.register_provider(&admin, &ns, &id, &metadata, &2u64);
     assert!(client.get_provider(&ns, &id).is_some());

@@ -421,3 +421,108 @@ fn test_batch_consistency_partial_business_no_snapshot_still_ok() {
         &77_000u64
     ));
 }
+
+#[test]
+fn test_submit_aggregated_root_success() {
+    let env = Env::default();
+    let (client, _snap, admin, _agg_id, _snap_id) = setup(&env);
+    let id = String::from_str(&env, "p1");
+    let root = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    
+    env.ledger().set_timestamp(1000);
+    client.submit_aggregated_root(&admin, &id, &root, &0u64, &500u64, &1u32);
+    
+    let roots = client.get_aggregated_roots(&id);
+    assert_eq!(roots.len(), 1);
+    let record = roots.get(0).unwrap();
+    assert_eq!(record.root, root);
+    assert_eq!(record.start_timestamp, 0);
+    assert_eq!(record.end_timestamp, 500);
+    assert_eq!(record.version, 1);
+}
+
+#[test]
+#[should_panic(expected = "invalid window boundaries")]
+fn test_submit_aggregated_root_invalid_boundaries() {
+    let env = Env::default();
+    let (client, _snap, admin, _agg_id, _snap_id) = setup(&env);
+    let id = String::from_str(&env, "p1");
+    let root = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    
+    env.ledger().set_timestamp(1000);
+    client.submit_aggregated_root(&admin, &id, &root, &500u64, &100u64, &1u32);
+}
+
+#[test]
+#[should_panic(expected = "future window boundary")]
+fn test_submit_aggregated_root_future_boundary() {
+    let env = Env::default();
+    let (client, _snap, admin, _agg_id, _snap_id) = setup(&env);
+    let id = String::from_str(&env, "p1");
+    let root = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    
+    env.ledger().set_timestamp(1000);
+    client.submit_aggregated_root(&admin, &id, &root, &0u64, &1001u64, &1u32);
+}
+
+#[test]
+#[should_panic(expected = "overlapping window boundaries")]
+fn test_submit_aggregated_root_overlapping_windows() {
+    let env = Env::default();
+    let (client, _snap, admin, _agg_id, _snap_id) = setup(&env);
+    let id = String::from_str(&env, "p1");
+    let root1 = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = soroban_sdk::BytesN::from_array(&env, &[2u8; 32]);
+    
+    env.ledger().set_timestamp(2000);
+    client.submit_aggregated_root(&admin, &id, &root1, &0u64, &1000u64, &1u32);
+    // Overlapping [500, 1500] with [0, 1000]
+    client.submit_aggregated_root(&admin, &id, &root2, &500u64, &1500u64, &1u32);
+}
+
+#[test]
+fn test_submit_aggregated_root_version_bump() {
+    let env = Env::default();
+    let (client, _snap, admin, _agg_id, _snap_id) = setup(&env);
+    let id = String::from_str(&env, "p1");
+    let root1 = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = soroban_sdk::BytesN::from_array(&env, &[2u8; 32]);
+    
+    env.ledger().set_timestamp(2000);
+    client.submit_aggregated_root(&admin, &id, &root1, &0u64, &1000u64, &1u32);
+    // Version bump! Allowed to overlap.
+    client.submit_aggregated_root(&admin, &id, &root2, &500u64, &1500u64, &2u32);
+    
+    let roots = client.get_aggregated_roots(&id);
+    assert_eq!(roots.len(), 2);
+}
+
+#[test]
+fn test_get_aggregated_root_at_timestamp() {
+    let env = Env::default();
+    let (client, _snap, admin, _agg_id, _snap_id) = setup(&env);
+    let id = String::from_str(&env, "p1");
+    let root1 = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = soroban_sdk::BytesN::from_array(&env, &[2u8; 32]);
+    
+    env.ledger().set_timestamp(2000);
+    client.submit_aggregated_root(&admin, &id, &root1, &0u64, &1000u64, &1u32);
+    client.submit_aggregated_root(&admin, &id, &root2, &500u64, &1500u64, &2u32);
+    
+    // At 200 -> only root1 applies
+    let r1 = client.get_aggregated_root_at_timestamp(&id, &200u64).unwrap();
+    assert_eq!(r1.root, root1);
+    
+    // At 600 -> both apply, but version 2 is higher!
+    let r2 = client.get_aggregated_root_at_timestamp(&id, &600u64).unwrap();
+    assert_eq!(r2.root, root2);
+    assert_eq!(r2.version, 2);
+    
+    // At 1200 -> only root2 applies
+    let r3 = client.get_aggregated_root_at_timestamp(&id, &1200u64).unwrap();
+    assert_eq!(r3.root, root2);
+    
+    // At 1600 -> none apply
+    let r4 = client.get_aggregated_root_at_timestamp(&id, &1600u64);
+    assert!(r4.is_none());
+}

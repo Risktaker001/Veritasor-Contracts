@@ -570,6 +570,109 @@ fn test_transfer_ownership_unauthorized() {
     client.transfer_ownership(&bond_id, &fake_owner, &new_owner);
 }
 
+#[test]
+#[should_panic(expected = "cannot transfer to self")]
+fn test_transfer_ownership_to_self_panics() {
+    let (env, admin, issuer, owner, token, attestation_contract) = setup_test();
+    let contract_id = env.register(RevenueBondContract, ());
+    let client = RevenueBondContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let bond_id = client.issue_bond(
+        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
+        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+    );
+    client.transfer_ownership(&bond_id, &owner, &owner);
+}
+
+#[test]
+#[should_panic(expected = "cannot transfer to issuer")]
+fn test_transfer_ownership_to_issuer_panics() {
+    let (env, admin, issuer, owner, token, attestation_contract) = setup_test();
+    let contract_id = env.register(RevenueBondContract, ());
+    let client = RevenueBondContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let bond_id = client.issue_bond(
+        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
+        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+    );
+    client.transfer_ownership(&bond_id, &owner, &issuer);
+}
+
+#[test]
+#[should_panic(expected = "cannot transfer to contract itself")]
+fn test_transfer_ownership_to_contract_itself_panics() {
+    let (env, admin, issuer, owner, token, attestation_contract) = setup_test();
+    let contract_id = env.register(RevenueBondContract, ());
+    let client = RevenueBondContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let bond_id = client.issue_bond(
+        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
+        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+    );
+    client.transfer_ownership(&bond_id, &owner, &contract_id);
+}
+
+#[test]
+#[should_panic(expected = "bond not active")]
+fn test_transfer_ownership_when_not_active_panics() {
+    let (env, admin, issuer, owner, token, attestation_contract) = setup_test();
+    let contract_id = env.register(RevenueBondContract, ());
+    let client = RevenueBondContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let bond_id = client.issue_bond(
+        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
+        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+    );
+    
+    client.mark_defaulted(&admin, &bond_id);
+    
+    let new_owner = Address::generate(&env);
+    client.transfer_ownership(&bond_id, &owner, &new_owner);
+}
+
+#[test]
+fn test_transfer_ownership_during_active_redemption_window() {
+    let (env, admin, issuer, owner, token, attestation_contract) = setup_test();
+    let contract_id = env.register(RevenueBondContract, ());
+    let client = RevenueBondContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let bond_id = client.issue_bond(
+        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
+        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+    );
+
+    // Period 1 Redemption
+    let period1 = String::from_str(&env, "2026-02");
+    set_mock_revenue(&env, &issuer, "2026-02", 2_000_000);
+    client.redeem(&bond_id, &period1);
+    
+    assert_eq!(client.get_total_redeemed(&bond_id), 500_000);
+
+    // Transfer ownership during active redemption window
+    let new_owner = Address::generate(&env);
+    client.transfer_ownership(&bond_id, &owner, &new_owner);
+    assert_eq!(client.get_owner(&bond_id).unwrap(), new_owner);
+
+    // Period 2 Redemption - should pay the new owner
+    let period2 = String::from_str(&env, "2026-03");
+    set_mock_revenue(&env, &issuer, "2026-03", 2_000_000);
+    
+    let token_client = token::Client::new(&env, &token);
+    let initial_balance = token_client.balance(&new_owner);
+    assert_eq!(initial_balance, 0);
+
+    client.redeem(&bond_id, &period2);
+
+    let final_balance = token_client.balance(&new_owner);
+    assert_eq!(final_balance, 500_000);
+    assert_eq!(client.get_total_redeemed(&bond_id), 1_000_000);
+}
+
 // ─── Admin operations ─────────────────────────────────────────────────────────
 
 #[test]

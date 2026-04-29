@@ -499,70 +499,18 @@ impl RevenueBondContract {
         }
     }
 
-    /// Transitions a bond to `Defaulted` if an attestation is missing or revoked.
+    /// Transfer bond ownership to a new address.
     ///
-    /// Deterministic transition based on verifiable on-chain state:
-    /// 1. **Missing**: Current time > Period End + Grace Period.
-    /// 2. **Revoked**: Attestation was previously valid but is now revoked.
-    ///
-    /// # Arguments
-    /// * `owner` – The bond owner who must authorize this declaration.
-    /// * `bond_id` – Bond identifier.
-    /// * `period` – The period for which the issuer failed to provide a valid attestation.
-    pub fn declare_default(env: Env, owner: Address, bond_id: u64, period: String) {
-        owner.require_auth();
-
-        let mut bond: Bond = env
-            .storage()
-            .instance()
-            .get(&DataKey::Bond(bond_id))
-            .expect("bond not found");
-
-        let stored_owner: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::BondOwner(bond_id))
-            .expect("owner not found");
-        assert_eq!(owner, stored_owner, "unauthorized: only owner can declare default");
-
-        assert_eq!(bond.status, BondStatus::Active, "bond not active");
-
-        assert!(
-            is_period_within_maturity(&env, &bond, period.clone()),
-            "period outside maturity window"
-        );
-
-        let client = attestation_import::AttestationContractClient::new(
-            &env,
-            &bond.attestation_contract,
-        );
-
-        let is_revoked = client.is_revoked(&bond.issuer, &period);
-        let att_opt = client.get_attestation(&bond.issuer, &period);
-
-        if is_revoked {
-            // Revocation triggers default immediately regardless of grace period.
-            bond.status = BondStatus::Defaulted;
-        } else if att_opt.is_none() {
-            // Missing attestation triggers default only after grace period expires.
-            let deadline = get_period_end_timestamp(period).saturating_add(bond.grace_period_seconds);
-            if env.ledger().timestamp() > deadline {
-                bond.status = BondStatus::Defaulted;
-            } else {
-                panic!("grace period not yet expired");
-            }
-        } else {
-            panic!("valid attestation exists; no default condition met");
-        }
-
-        env.storage().instance().set(&DataKey::Bond(bond_id), &bond);
-    }
-
-    /// Transfer bond ownership.
+    /// # Security Invariants
+    /// 1. The `current_owner` must authorize the transfer.
+    /// 2. The `current_owner` must match the stored owner of the bond.
+    /// 3. Cannot transfer to self (`current_owner == new_owner`).
+    /// 4. Cannot transfer to the bond issuer (prevents bypassing issuer restrictions).
+    /// 5. Cannot transfer to the contract itself (zero-address/placeholder guard).
+    /// 6. The bond must be in `Active` status.
     ///
     /// # Panics
-    /// Panics if the bond does not exist, the caller is not the owner, or
-    /// `current_owner == new_owner`.
+    /// Panics if any invariant is violated or if the bond is not found.
     pub fn transfer_ownership(env: Env, bond_id: u64, current_owner: Address, new_owner: Address) {
         current_owner.require_auth();
 
@@ -574,6 +522,16 @@ impl RevenueBondContract {
 
         assert_eq!(current_owner, stored_owner, "not bond owner");
         assert!(!current_owner.eq(&new_owner), "cannot transfer to self");
+
+        let bond: Bond = env
+            .storage()
+            .instance()
+            .get(&DataKey::Bond(bond_id))
+            .expect("bond not found");
+
+        assert_eq!(bond.status, BondStatus::Active, "bond not active");
+        assert!(!bond.issuer.eq(&new_owner), "cannot transfer to issuer");
+        assert!(!env.current_contract_address().eq(&new_owner), "cannot transfer to contract itself");
 
         env.storage().instance().set(&DataKey::BondOwner(bond_id), &new_owner);
     }

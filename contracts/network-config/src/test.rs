@@ -454,7 +454,7 @@ fn test_get_fee_policy_nonexistent_network() {
 }
 
 #[test]
-#[should_panic(expected = "network config not found")]
+#[should_panic(expected = "unknown network id: 999")]
 fn test_update_fee_policy_nonexistent_network_panics() {
     let (env, client, admin) = setup();
     
@@ -674,7 +674,7 @@ fn test_set_and_get_default_network() {
 }
 
 #[test]
-#[should_panic(expected = "network config not found")]
+#[should_panic(expected = "unknown network id: 999")]
 fn test_set_nonexistent_default_network_panics() {
     let (env, client, admin) = setup();
     client.set_default_network(&admin, &999u32);
@@ -1603,3 +1603,187 @@ fn test_version_info() {
     assert!(info.activated_at > 0);
 }
 
+
+// ============================================================================
+// Issue #240 – Defensive checks for unknown network identifiers
+// ============================================================================
+
+// --- network_exists query ---
+
+#[test]
+fn test_network_exists_registered() {
+    let (env, client, admin) = setup();
+    let config = create_testnet_config(&env);
+    client.set_network_config(&admin, &1u32, &config);
+    assert!(client.network_exists(&1u32));
+}
+
+#[test]
+fn test_network_exists_unregistered() {
+    let (env, client, _admin) = setup();
+    assert!(!client.network_exists(&1u32));
+    assert!(!client.network_exists(&0u32));
+    assert!(!client.network_exists(&u32::MAX));
+}
+
+#[test]
+fn test_network_exists_after_removal() {
+    let (env, client, admin) = setup();
+    let config = create_testnet_config(&env);
+    client.set_network_config(&admin, &1u32, &config);
+    client.set_network_active(&admin, &1u32, &false);
+    client.remove_network(&admin, &1u32);
+    assert!(!client.network_exists(&1u32));
+}
+
+// --- write paths reject unknown network ids ---
+
+#[test]
+#[should_panic(expected = "unknown network id: 42")]
+fn test_update_fee_policy_unknown_id_panics() {
+    let (env, client, admin) = setup();
+    let policy = FeePolicy {
+        fee_token: Address::generate(&env),
+        fee_collector: Address::generate(&env),
+        base_fee: 1_000_000i128,
+        enabled: true,
+        max_fee: 10_000_000i128,
+        min_fee: 100_000i128,
+    };
+    client.update_fee_policy(&admin, &42u32, &policy);
+}
+
+#[test]
+#[should_panic(expected = "unknown network id: 7")]
+fn test_update_contract_registry_unknown_id_panics() {
+    let (env, client, admin) = setup();
+    let registry = contract_registry_attestation_only(&env, Address::generate(&env));
+    client.update_contract_registry(&admin, &7u32, &registry);
+}
+
+#[test]
+#[should_panic(expected = "unknown network id: 5")]
+fn test_set_network_active_unknown_id_panics() {
+    let (env, client, admin) = setup();
+    client.set_network_active(&admin, &5u32, &false);
+}
+
+#[test]
+#[should_panic(expected = "unknown network id: 99")]
+fn test_set_default_network_unknown_id_panics() {
+    let (env, client, admin) = setup();
+    client.set_default_network(&admin, &99u32);
+}
+
+#[test]
+#[should_panic(expected = "unknown network id: 88")]
+fn test_remove_network_unknown_id_panics() {
+    let (env, client, admin) = setup();
+    client.remove_network(&admin, &88u32);
+}
+
+// --- typo / deprecated network names in get_contract_address ---
+
+#[test]
+fn test_get_contract_address_typo_returns_none() {
+    let (env, client, admin) = setup();
+    let config = create_testnet_config(&env);
+    client.set_network_config(&admin, &1u32, &config);
+
+    // Typos / wrong casing / deprecated names all return None
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "Attestation")).is_none());
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "ATTESTATION")).is_none());
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "attest")).is_none());
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "revenue")).is_none());
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "audit")).is_none());
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "")).is_none());
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "unknown_contract")).is_none());
+}
+
+#[test]
+fn test_get_contract_address_unknown_network_returns_none() {
+    let (env, client, _admin) = setup();
+    // Network 999 was never registered – must return None, not panic
+    assert!(client.get_contract_address(&999u32, &String::from_str(&env, "attestation")).is_none());
+}
+
+#[test]
+fn test_get_contract_address_slot_not_populated_returns_none() {
+    let (env, client, admin) = setup();
+    let mut config = create_testnet_config(&env);
+    // Only attestation slot is populated
+    config.contracts = contract_registry_attestation_only(&env, Address::generate(&env));
+    client.set_network_config(&admin, &1u32, &config);
+
+    // Unpopulated slots return None
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "revenue_stream")).is_none());
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "audit_log")).is_none());
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "aggregated_attestations")).is_none());
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "integration_registry")).is_none());
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "attestation_snapshot")).is_none());
+    // Populated slot still works
+    assert!(client.get_contract_address(&1u32, &String::from_str(&env, "attestation")).is_some());
+}
+
+// --- partial config reads on unregistered networks ---
+
+#[test]
+fn test_partial_reads_unregistered_network_safe() {
+    let (env, client, _admin) = setup();
+    // All read paths must return safe defaults for an unregistered network id
+    assert!(client.get_network_config(&404u32).is_none());
+    assert!(client.get_fee_policy(&404u32).is_none());
+    assert!(client.get_contract_registry(&404u32).is_none());
+    assert_eq!(client.get_allowed_assets(&404u32).len(), 0);
+    assert!(!client.is_network_active(&404u32));
+    assert_eq!(client.get_network_version(&404u32), 0);
+    assert!(client.get_network_parameters(&404u32).is_none());
+    assert!(!client.network_exists(&404u32));
+}
+
+// --- deprecated / removed network treated as unknown ---
+
+#[test]
+#[should_panic(expected = "unknown network id: 1")]
+fn test_write_to_removed_network_panics() {
+    let (env, client, admin) = setup();
+    let config = create_testnet_config(&env);
+    client.set_network_config(&admin, &1u32, &config);
+    client.set_network_active(&admin, &1u32, &false);
+    client.remove_network(&admin, &1u32);
+
+    // After removal the id is unknown – write must panic
+    let policy = FeePolicy {
+        fee_token: Address::generate(&env),
+        fee_collector: Address::generate(&env),
+        base_fee: 1_000_000i128,
+        enabled: true,
+        max_fee: 10_000_000i128,
+        min_fee: 100_000i128,
+    };
+    client.update_fee_policy(&admin, &1u32, &policy);
+}
+
+// --- network_exists used as pre-flight guard ---
+
+#[test]
+fn test_network_exists_preflight_guard_pattern() {
+    let (env, client, admin) = setup();
+    let config = create_testnet_config(&env);
+    client.set_network_config(&admin, &1u32, &config);
+
+    // Simulate integrator pattern: check before write
+    let target = 1u32;
+    assert!(client.network_exists(&target), "network must exist before update");
+
+    let policy = FeePolicy {
+        fee_token: Address::generate(&env),
+        fee_collector: Address::generate(&env),
+        base_fee: 2_000_000i128,
+        enabled: true,
+        max_fee: 20_000_000i128,
+        min_fee: 200_000i128,
+    };
+    client.update_fee_policy(&admin, &target, &policy);
+    assert_eq!(client.get_fee_policy(&target).unwrap().base_fee, 2_000_000i128);
+}

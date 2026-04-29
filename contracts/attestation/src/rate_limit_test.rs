@@ -260,3 +260,221 @@ fn test_disabled_rate_limit_preserves_unlimited_submissions() {
     assert_eq!(client.get_submission_burst_count(&business), 0);
     assert_eq!(client.get_business_count(&business), 3);
 }
+
+// ── Adversarial burst pattern tests ──────────────────────────────────────────
+
+/// An attacker submits exactly at the burst limit, waits for the burst window
+/// to expire, then repeats — cycling through the full window without ever
+/// triggering the burst guard. The full-window limit must still fire.
+#[test]
+#[should_panic(expected = "rate limit exceeded")]
+fn test_adversarial_burst_cycling_hits_full_window_limit() {
+    let (env, client, _admin) = setup();
+    let business = Address::generate(&env);
+
+    // full window: 3 submissions / 200 s; burst: 2 / 60 s
+    configure_rate_limit(&client, 3, 200, 2, 60, true, 1);
+
+    // Cycle 1: fill burst window
+    set_ledger_timestamp(&env, 1_000);
+    submit(&client, &env, &business, 1);
+    set_ledger_timestamp(&env, 1_001);
+    submit(&client, &env, &business, 2);
+
+    // Wait for burst window to expire, then submit again
+    set_ledger_timestamp(&env, 1_062); // > 1_001 + 60
+    submit(&client, &env, &business, 3);
+
+    // Now full window is exhausted; this must panic
+    set_ledger_timestamp(&env, 1_063);
+    submit(&client, &env, &business, 4);
+}
+
+/// Rapid-fire: attacker sends max_submissions in a single ledger second.
+/// The (max_submissions + 1)-th call must be rejected.
+#[test]
+#[should_panic(expected = "rate limit exceeded")]
+fn test_adversarial_rapid_fire_exhausts_full_window() {
+    let (env, client, _admin) = setup();
+    let business = Address::generate(&env);
+
+    // burst == full window so burst guard never fires first
+    configure_rate_limit(&client, 3, 3600, 3, 3600, true, 1);
+
+    set_ledger_timestamp(&env, 1_000);
+    submit(&client, &env, &business, 1);
+    set_ledger_timestamp(&env, 1_001);
+    submit(&client, &env, &business, 2);
+    set_ledger_timestamp(&env, 1_002);
+    submit(&client, &env, &business, 3);
+
+    // 4th submission must be rejected
+    set_ledger_timestamp(&env, 1_003);
+    submit(&client, &env, &business, 4);
+}
+
+/// Attacker submits exactly at the burst limit boundary (burst_window_seconds
+/// apart) to avoid the burst guard while accumulating full-window entries.
+#[test]
+#[should_panic(expected = "rate limit exceeded")]
+fn test_adversarial_boundary_spacing_exhausts_full_window() {
+    let (env, client, _admin) = setup();
+    let business = Address::generate(&env);
+
+    // full: 3 / 300 s; burst: 1 / 60 s
+    configure_rate_limit(&client, 3, 300, 1, 60, true, 1);
+
+    set_ledger_timestamp(&env, 1_000);
+    submit(&client, &env, &business, 1);
+    set_ledger_timestamp(&env, 1_061); // just past burst window
+    submit(&client, &env, &business, 2);
+    set_ledger_timestamp(&env, 1_122);
+    submit(&client, &env, &business, 3);
+
+    // All three are still in the full window; 4th must be rejected
+    set_ledger_timestamp(&env, 1_183);
+    submit(&client, &env, &business, 4);
+}
+
+/// Attacker submits two in the burst window, waits for the burst window to
+/// expire, then submits two more — verifying the burst counter resets
+/// correctly and the full-window counter accumulates.
+#[test]
+fn test_adversarial_burst_reset_accumulates_full_window() {
+    let (env, client, _admin) = setup();
+    let business = Address::generate(&env);
+
+    // full: 5 / 3600 s; burst: 2 / 60 s
+    configure_rate_limit(&client, 5, 3600, 2, 60, true, 1);
+
+    set_ledger_timestamp(&env, 1_000);
+    submit(&client, &env, &business, 1);
+    set_ledger_timestamp(&env, 1_001);
+    submit(&client, &env, &business, 2);
+
+    // Burst window expires
+    set_ledger_timestamp(&env, 1_062);
+    submit(&client, &env, &business, 3);
+    set_ledger_timestamp(&env, 1_063);
+    submit(&client, &env, &business, 4);
+
+    // Full window has 4 entries; burst window has 2 (ts 1_062 and 1_063)
+    assert_eq!(client.get_submission_window_count(&business), 4);
+    assert_eq!(client.get_submission_burst_count(&business), 2);
+}
+
+/// Verify that the burst guard fires before the full-window guard when both
+/// limits would be exceeded simultaneously.
+#[test]
+#[should_panic(expected = "burst rate limit exceeded")]
+fn test_adversarial_burst_guard_fires_before_full_window_guard() {
+    let (env, client, _admin) = setup();
+    let business = Address::generate(&env);
+
+    // full: 10 / 3600 s; burst: 2 / 60 s
+    configure_rate_limit(&client, 10, 3600, 2, 60, true, 1);
+
+    set_ledger_timestamp(&env, 1_000);
+    submit(&client, &env, &business, 1);
+    set_ledger_timestamp(&env, 1_001);
+    submit(&client, &env, &business, 2);
+
+    // Burst limit (2) reached; full-window limit (10) not yet reached
+    set_ledger_timestamp(&env, 1_002);
+    submit(&client, &env, &business, 3);
+}
+
+/// Clock-skew edge case: ledger timestamp is 0 (common in unit tests).
+/// `saturating_sub` must prevent underflow; no submissions should be pruned.
+#[test]
+fn test_clock_skew_zero_timestamp_no_underflow() {
+    let (env, client, _admin) = setup();
+    let business = Address::generate(&env);
+
+    configure_rate_limit(&client, 5, 3600, 3, 60, true, 1);
+
+    // Ledger timestamp stays at 0 (default in test env)
+    submit(&client, &env, &business, 1);
+    submit(&client, &env, &business, 2);
+
+    assert_eq!(client.get_submission_window_count(&business), 2);
+    assert_eq!(client.get_submission_burst_count(&business), 2);
+}
+
+/// Validate that `max_submissions = MAX_SUBMISSIONS_LIMIT` (100) is accepted
+/// and that `MAX_SUBMISSIONS_LIMIT + 1` is rejected.
+#[test]
+fn test_configure_max_submissions_at_limit_accepted() {
+    let (_env, client, _admin) = setup();
+    configure_rate_limit(&client, 100, 3600, 100, 3600, true, 1);
+    let config = client.get_rate_limit_config().unwrap();
+    assert_eq!(config.max_submissions, 100);
+}
+
+#[test]
+#[should_panic(expected = "max_submissions exceeds maximum allowed limit")]
+fn test_configure_max_submissions_above_limit_rejected() {
+    let (_env, client, _admin) = setup();
+    configure_rate_limit(&client, 101, 3600, 1, 60, true, 1);
+}
+
+/// Validate that `window_seconds = MAX_WINDOW_SECONDS` (1 year) is accepted
+/// and that `MAX_WINDOW_SECONDS + 1` is rejected.
+#[test]
+fn test_configure_window_seconds_at_limit_accepted() {
+    let (_env, client, _admin) = setup();
+    configure_rate_limit(&client, 5, 31_536_000, 2, 60, true, 1);
+    let config = client.get_rate_limit_config().unwrap();
+    assert_eq!(config.window_seconds, 31_536_000);
+}
+
+#[test]
+#[should_panic(expected = "window_seconds exceeds maximum allowed limit")]
+fn test_configure_window_seconds_above_limit_rejected() {
+    let (_env, client, _admin) = setup();
+    configure_rate_limit(&client, 5, 31_536_001, 2, 60, true, 1);
+}
+
+/// Verify that re-configuring rate limits mid-stream takes effect immediately
+/// for subsequent submissions.
+#[test]
+fn test_reconfigure_tightens_limit_immediately() {
+    let (env, client, _admin) = setup();
+    let business = Address::generate(&env);
+
+    configure_rate_limit(&client, 5, 3600, 5, 3600, true, 1);
+
+    set_ledger_timestamp(&env, 1_000);
+    submit(&client, &env, &business, 1);
+    submit(&client, &env, &business, 2);
+
+    // Tighten to 2 submissions per window — already at the new limit
+    configure_rate_limit(&client, 2, 3600, 2, 3600, true, 2);
+
+    // Window count reflects the 2 submissions made before reconfigure
+    assert_eq!(client.get_submission_window_count(&business), 2);
+}
+
+/// Storage growth bound: after filling the window and letting it expire,
+/// the pruning step must reduce the stored vector back to zero.
+#[test]
+fn test_storage_pruning_after_full_window_expiry() {
+    let (env, client, _admin) = setup();
+    let business = Address::generate(&env);
+
+    configure_rate_limit(&client, 3, 100, 3, 100, true, 1);
+
+    set_ledger_timestamp(&env, 1_000);
+    submit(&client, &env, &business, 1);
+    set_ledger_timestamp(&env, 1_001);
+    submit(&client, &env, &business, 2);
+    set_ledger_timestamp(&env, 1_002);
+    submit(&client, &env, &business, 3);
+
+    assert_eq!(client.get_submission_window_count(&business), 3);
+
+    // Advance past the full window; all entries should be pruned
+    set_ledger_timestamp(&env, 1_103); // > 1_002 + 100
+    assert_eq!(client.get_submission_window_count(&business), 0);
+    assert_eq!(client.get_submission_burst_count(&business), 0);
+}

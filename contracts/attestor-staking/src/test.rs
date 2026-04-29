@@ -287,3 +287,119 @@ fn test_initialize_circular_token() {
     );
 }
 
+#[test]
+fn test_multiple_pending_unstakes() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let attestor = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let dispute_contract = Address::generate(&env);
+
+    let (token_id, token_admin, _token_client) = create_token_contract(&env, &admin);
+    token_admin.mint(&attestor, &10000);
+
+    let contract_id = env.register(AttestorStakingContract, ());
+    let client = AttestorStakingContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &token_id, &treasury, &1000, &dispute_contract, &100u64);
+    client.stake(&attestor, &5000);
+
+    // Request unstake 1
+    client.request_unstake(&attestor, &1000);
+    
+    // Request unstake 2
+    client.request_unstake(&attestor, &2000);
+
+    let stake = client.get_stake(&attestor).unwrap();
+    assert_eq!(stake.amount, 5000);
+    assert_eq!(stake.locked, 3000);
+
+    let pending_requests = client.get_pending_unstakes(&attestor).unwrap();
+    assert_eq!(pending_requests.len(), 2);
+    assert_eq!(pending_requests.get(0).unwrap().amount, 1000);
+    assert_eq!(pending_requests.get(1).unwrap().amount, 2000);
+}
+
+#[test]
+fn test_unlock_timestamp_monotonicity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let attestor = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let dispute_contract = Address::generate(&env);
+
+    let (token_id, token_admin, _token_client) = create_token_contract(&env, &admin);
+    token_admin.mint(&attestor, &10000);
+
+    let contract_id = env.register(AttestorStakingContract, ());
+    let client = AttestorStakingContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &token_id, &treasury, &1000, &dispute_contract, &100u64);
+    client.stake(&attestor, &5000);
+
+    // Request 1 at ts 0 -> unlocks at 100
+    set_ledger_timestamp(&env, 0);
+    client.request_unstake(&attestor, &1000);
+
+    // Admin changes unbonding period to 50
+    client.set_unbonding_period(&admin, &50u64);
+
+    // Request 2 at ts 10 -> would unlock at 60, but enforced to 100!
+    set_ledger_timestamp(&env, 10);
+    client.request_unstake(&attestor, &1000);
+
+    let pending_requests = client.get_pending_unstakes(&attestor).unwrap();
+    assert_eq!(pending_requests.get(0).unwrap().unlock_timestamp, 100);
+    assert_eq!(pending_requests.get(1).unwrap().unlock_timestamp, 100);
+}
+
+#[test]
+fn test_withdraw_multiple_unlocked() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let attestor = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let dispute_contract = Address::generate(&env);
+
+    let (token_id, token_admin, token_client) = create_token_contract(&env, &admin);
+    token_admin.mint(&attestor, &10000);
+
+    let contract_id = env.register(AttestorStakingContract, ());
+    let client = AttestorStakingContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &token_id, &treasury, &1000, &dispute_contract, &100u64);
+    client.stake(&attestor, &5000);
+
+    set_ledger_timestamp(&env, 0);
+    client.request_unstake(&attestor, &1000); // unlocks at 100
+
+    set_ledger_timestamp(&env, 50);
+    client.request_unstake(&attestor, &1000); // unlocks at 150
+
+    let before = token_client.balance(&attestor);
+
+    // Advance to 120 -> only first is unlocked
+    set_ledger_timestamp(&env, 120);
+    client.withdraw_unstaked(&attestor);
+
+    let stake = client.get_stake(&attestor).unwrap();
+    assert_eq!(stake.amount, 4000);
+    assert_eq!(stake.locked, 1000);
+    assert_eq!(token_client.balance(&attestor), before + 1000);
+
+    // Advance to 160 -> second is unlocked
+    set_ledger_timestamp(&env, 160);
+    client.withdraw_unstaked(&attestor);
+
+    let stake = client.get_stake(&attestor).unwrap();
+    assert_eq!(stake.amount, 3000);
+    assert_eq!(stake.locked, 0);
+    assert_eq!(token_client.balance(&attestor), before + 2000);
+}
+

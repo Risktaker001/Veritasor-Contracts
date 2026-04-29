@@ -1,5 +1,19 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+//! # Attestor Staking Contract
+//!
+//! This module manages the staking and unbonding lifecycle for attestors.
+//! It supports staking, unbonding queues, and slashing mechanisms.
+//!
+//! ## Unbonding Queue Correctness
+//! To protect against partial locks and concurrent withdrawal requests:
+//! 1. **Multiple Pending Unstakes**: Users can submit multiple requests (up to a limit).
+//! 2. **Unlock Timestamp Monotonicity**: Newer requests are guaranteed to unlock
+//!    after older ones, even if the unbonding period is shortened.
+//! 3. **Slashing Adjustment**: Slashes reduce pending requests using LIFO order.
+
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
+
+
 
 /// Slashing outcome for a resolved dispute
 #[contracttype]
@@ -149,7 +163,8 @@ impl AttestorStakingContract {
     /// Request to unstake tokens.
     ///
     /// This locks the requested amount immediately and makes it withdrawable
-    /// only after the configured unbonding period.
+    /// only after the configured unbonding period. Supports multiple pending unstakes
+    /// in a queue.
     ///
     /// # Arguments
     /// * `attestor` - Address unstaking tokens
@@ -159,10 +174,14 @@ impl AttestorStakingContract {
         assert!(amount > 0, "amount must be positive");
 
         let pending_key = DataKey::PendingUnstake(attestor.clone());
-        assert!(
-            !env.storage().instance().has(&pending_key),
-            "pending unstake exists"
-        );
+        let mut pending_vec: Vec<PendingUnstake> = env
+            .storage()
+            .instance()
+            .get(&pending_key)
+            .unwrap_or(Vec::new(&env));
+
+        // Enforce a limit to prevent unbounded storage
+        assert!(pending_vec.len() < 10, "too many pending unstakes");
 
         let stake_key = DataKey::Stake(attestor.clone());
         let mut stake: Stake = env
@@ -182,28 +201,49 @@ impl AttestorStakingContract {
             .instance()
             .get(&DataKey::UnbondingPeriod)
             .unwrap_or(0);
-        let unlock_timestamp = env.ledger().timestamp().saturating_add(unbonding);
+        
+        let mut unlock_timestamp = env.ledger().timestamp().saturating_add(unbonding);
+        
+        // Unlock timestamp monotonicity
+        if pending_vec.len() > 0 {
+            let last_pending = pending_vec.get(pending_vec.len() - 1).unwrap();
+            if unlock_timestamp < last_pending.unlock_timestamp {
+                unlock_timestamp = last_pending.unlock_timestamp;
+            }
+        }
+
         let pending = PendingUnstake {
             amount,
             unlock_timestamp,
         };
-        env.storage().instance().set(&pending_key, &pending);
+        
+        pending_vec.push_back(pending);
+        env.storage().instance().set(&pending_key, &pending_vec);
     }
 
-    /// Withdraw previously requested unstake after the unbonding period.
+    /// Withdraw previously requested unstakes after the unbonding period.
     pub fn withdraw_unstaked(env: Env, attestor: Address) {
         attestor.require_auth();
 
         let pending_key = DataKey::PendingUnstake(attestor.clone());
-        let pending: PendingUnstake = env
+        let pending_vec: Vec<PendingUnstake> = env
             .storage()
             .instance()
             .get(&pending_key)
             .expect("no pending unstake");
-        assert!(
-            env.ledger().timestamp() >= pending.unlock_timestamp,
-            "unstake not yet unlocked"
-        );
+
+        let mut remaining_vec = Vec::new(&env);
+        let mut total_to_withdraw: i128 = 0;
+
+        for pending in pending_vec.iter() {
+            if env.ledger().timestamp() >= pending.unlock_timestamp {
+                total_to_withdraw += pending.amount;
+            } else {
+                remaining_vec.push_back(pending);
+            }
+        }
+
+        assert!(total_to_withdraw > 0, "no unstake unlocked");
 
         let stake_key = DataKey::Stake(attestor.clone());
         let mut stake: Stake = env
@@ -211,18 +251,24 @@ impl AttestorStakingContract {
             .instance()
             .get(&stake_key)
             .expect("no stake found");
-        assert!(stake.locked >= pending.amount, "locked invariant violated");
-        assert!(stake.amount >= pending.amount, "stake invariant violated");
+            
+        assert!(stake.locked >= total_to_withdraw, "locked invariant violated");
+        assert!(stake.amount >= total_to_withdraw, "stake invariant violated");
 
-        stake.amount -= pending.amount;
-        stake.locked -= pending.amount;
+        stake.amount -= total_to_withdraw;
+        stake.locked -= total_to_withdraw;
         env.storage().instance().set(&stake_key, &stake);
-        env.storage().instance().remove(&pending_key);
+
+        if remaining_vec.len() == 0 {
+            env.storage().instance().remove(&pending_key);
+        } else {
+            env.storage().instance().set(&pending_key, &remaining_vec);
+        }
 
         // Transfer tokens back to attestor
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &attestor, &pending.amount);
+        token_client.transfer(&env.current_contract_address(), &attestor, &total_to_withdraw);
     }
 
     /// Slash an attestor's stake for a proven-false attestation
@@ -272,13 +318,34 @@ impl AttestorStakingContract {
             stake.locked = stake.amount;
         }
 
-        // If there is a pending unstake request, ensure it does not exceed locked.
+        // If there are pending unstake requests, ensure their total does not exceed locked.
         let pending_key = DataKey::PendingUnstake(attestor.clone());
         if env.storage().instance().has(&pending_key) {
-            let mut pending: PendingUnstake = env.storage().instance().get(&pending_key).unwrap();
-            if pending.amount > stake.locked {
-                pending.amount = stake.locked;
-                env.storage().instance().set(&pending_key, &pending);
+            let pending_vec: Vec<PendingUnstake> = env.storage().instance().get(&pending_key).unwrap();
+            let mut total_pending: i128 = 0;
+            for p in pending_vec.iter() {
+                total_pending += p.amount;
+            }
+            
+            if total_pending > stake.locked {
+                let mut excess = total_pending - stake.locked;
+                let mut modified_vec = pending_vec.clone();
+                let mut i = modified_vec.len();
+                while i > 0 {
+                    i -= 1;
+                    let mut p = modified_vec.get(i).unwrap();
+                    if excess > 0 {
+                        if p.amount <= excess {
+                            excess -= p.amount;
+                            p.amount = 0;
+                        } else {
+                            p.amount -= excess;
+                            excess = 0;
+                        }
+                    }
+                    modified_vec.set(i, p);
+                }
+                env.storage().instance().set(&pending_key, &modified_vec);
             }
         }
 
@@ -311,8 +378,24 @@ impl AttestorStakingContract {
         env.storage().instance().get(&DataKey::DisputeContract).unwrap()
     }
 
-    /// Get pending unstake information for an attestor.
+    /// Get the oldest pending unstake information for an attestor.
     pub fn get_pending_unstake(env: Env, attestor: Address) -> Option<PendingUnstake> {
+        let pending_key = DataKey::PendingUnstake(attestor);
+        let vec: Option<Vec<PendingUnstake>> = env.storage().instance().get(&pending_key);
+        match vec {
+            Some(v) => {
+                if v.len() > 0 {
+                    Some(v.get(0).unwrap())
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
+    }
+
+    /// Get all pending unstakes for an attestor.
+    pub fn get_pending_unstakes(env: Env, attestor: Address) -> Option<Vec<PendingUnstake>> {
         let pending_key = DataKey::PendingUnstake(attestor);
         env.storage().instance().get(&pending_key)
     }

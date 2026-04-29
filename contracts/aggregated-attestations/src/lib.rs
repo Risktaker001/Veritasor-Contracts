@@ -25,7 +25,8 @@
 //!   snapshots for a business contribute 0 to revenue/anomaly sums (for the chosen API).
 //! * Revoked attestations are not re-checked here; snapshot contract is the source of truth.
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, String, Vec};
+
 use veritasor_common::replay_protection;
 
 /// Admin replay channel (shared across `initialize` and `register_portfolio`).
@@ -54,12 +55,24 @@ mod snapshot_import {
 mod test;
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AggregatedRootRecord {
+    pub root: BytesN<32>,
+    pub start_timestamp: u64,
+    pub end_timestamp: u64,
+    pub version: u32,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
     /// Portfolio ID -> Vec<Address> (business set).
     Portfolio(String),
+    /// Portfolio ID -> Vec<AggregatedRootRecord> (submitted roots).
+    PortfolioRoots(String),
 }
+
 
 /// Summary metrics for a portfolio (aggregated from snapshot contract).
 #[contracttype]
@@ -335,6 +348,108 @@ impl AggregatedAttestationsContract {
         env.storage()
             .instance()
             .get(&DataKey::Portfolio(portfolio_id))
+    }
+
+    /// Submit an aggregated root for a portfolio.
+    ///
+    /// # Invariants
+    /// - Valid boundaries: `start_timestamp < end_timestamp`.
+    /// - No future claims: `end_timestamp <= env.ledger().timestamp()`.
+    /// - Version monotonicity: `version >= max_stored_version`.
+    /// - Within same version: `start_timestamp >= last_window.end_timestamp`.
+    pub fn submit_aggregated_root(
+        env: Env,
+        caller: Address,
+        portfolio_id: String,
+        root: BytesN<32>,
+        start_timestamp: u64,
+        end_timestamp: u64,
+        version: u32,
+    ) {
+        Self::require_admin(&env, &caller);
+
+        assert!(start_timestamp < end_timestamp, "invalid window boundaries");
+        assert!(end_timestamp <= env.ledger().timestamp(), "future window boundary");
+
+        let roots_key = DataKey::PortfolioRoots(portfolio_id);
+        let mut roots_vec: Vec<AggregatedRootRecord> = env
+            .storage()
+            .instance()
+            .get(&roots_key)
+            .unwrap_or(Vec::new(&env));
+
+        if roots_vec.len() > 0 {
+            let mut max_version = 0;
+            let mut last_record_opt: Option<AggregatedRootRecord> = None;
+
+            for i in 0..roots_vec.len() {
+                let record = roots_vec.get(i).unwrap();
+                if record.version > max_version {
+                    max_version = record.version;
+                    last_record_opt = Some(record);
+                } else if record.version == max_version {
+                    last_record_opt = Some(record);
+                }
+            }
+
+            if let Some(last_record) = last_record_opt {
+                assert!(version >= max_version, "version cannot be decreased");
+                if version == max_version {
+                    assert!(
+                        start_timestamp >= last_record.end_timestamp,
+                        "overlapping window boundaries"
+                    );
+                }
+            }
+        }
+
+        let new_record = AggregatedRootRecord {
+            root,
+            start_timestamp,
+            end_timestamp,
+            version,
+        };
+
+        roots_vec.push_back(new_record);
+        env.storage().instance().set(&roots_key, &roots_vec);
+    }
+
+    /// Get all aggregated roots for a portfolio.
+    pub fn get_aggregated_roots(env: Env, portfolio_id: String) -> Vec<AggregatedRootRecord> {
+        let roots_key = DataKey::PortfolioRoots(portfolio_id);
+        env.storage().instance().get(&roots_key).unwrap_or(Vec::new(&env))
+    }
+
+    /// Get the aggregated root applicable at a given timestamp.
+    /// Returns the root with the highest version that covers the timestamp.
+    pub fn get_aggregated_root_at_timestamp(
+        env: Env,
+        portfolio_id: String,
+        timestamp: u64,
+    ) -> Option<AggregatedRootRecord> {
+        let roots_key = DataKey::PortfolioRoots(portfolio_id);
+        let roots_vec: Vec<AggregatedRootRecord> = env
+            .storage()
+            .instance()
+            .get(&roots_key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut best_record: Option<AggregatedRootRecord> = None;
+
+        for i in 0..roots_vec.len() {
+            let record = roots_vec.get(i).unwrap();
+            if timestamp >= record.start_timestamp && timestamp < record.end_timestamp {
+                if let Some(ref best) = best_record {
+                    if record.version > best.version {
+                        best_record = Some(record);
+                    }
+                } else {
+                    best_record = Some(record);
+                }
+            }
+        }
+
+        best_record
     }
 
     fn require_admin(env: &Env, caller: &Address) -> Address {

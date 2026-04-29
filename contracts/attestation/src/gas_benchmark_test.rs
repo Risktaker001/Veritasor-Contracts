@@ -719,7 +719,7 @@ fn regression_is_revoked_active_threshold() {
 fn regression_is_revoked_after_revoke_threshold() {
     let (env, client, admin) = setup_basic();
     let business = Address::generate(&env);
-    let period = String::from_str(&env, \"2026-03\");
+    let period = String::from_str(&env, "2026-03");
     let root = BytesN::from_array(&env, &[17u8; 32]);
     client.submit_attestation(&business, &period, &root, &1_700_000_000u64, &1u32, &None, &None, &0u64);
     client.revoke_attestation(&admin, &business, &period, &String::from_str(&env, "test"), &1u64);
@@ -729,10 +729,10 @@ fn regression_is_revoked_after_revoke_threshold() {
     let after = BudgetSnapshot::capture(&env);
 
     // is_revoked is currently a stub returning false; assert it is consistent
-    assert!(!result, \"is_revoked stub should return false (implementation pending)\");
+    assert!(!result, "is_revoked stub should return false (implementation pending)");
     let cost = before.delta(&after);
-    cost.print(\"regression: is_revoked (after revoke)\");
-    cost.assert_within_target(\"regression_is_revoked_revoked\", 250_000, 6_000);
+    cost.print("regression: is_revoked (after revoke)");
+    cost.assert_within_target("regression_is_revoked_revoked", 250_000, 6_000);
 }
 
 // ── WASM Size Budget Edge Cases ──────────────────────────────────────
@@ -742,7 +742,7 @@ fn regression_is_revoked_after_revoke_threshold() {
 // debug symbols, oversized binaries, or unexpected features from
 // being included in production builds.
 
-#[cfg(target_arch = \"wasm32\")]
+#[cfg(target_arch = "wasm32")]
 mod wasm_size_edge_cases {
     use soroban_sdk::Env;
 
@@ -761,11 +761,11 @@ mod wasm_size_edge_cases {
         //
         // The actual verification happens at compile time through Cargo.toml:
         // [profile.release]
-        // panic = \"abort\"
+        // panic = "abort"
         //
         // This test serves as documentation that panic = abort is required
-        std::println!(\"Release profile must have panic = 'abort' configured\");
-        std::println!(\"Check: Cargo.toml [profile.release] section\");
+        std::println!("Release profile must have panic = 'abort' configured");
+        std::println!("Check: Cargo.toml [profile.release] section");
     }
 
     /// Verify debug = 0 to prevent debug info in WASM.
@@ -778,34 +778,34 @@ mod wasm_size_edge_cases {
     /// - WASM binaries should not contain DWARF debug sections
     #[test]
     fn release_profile_no_debug() {
-        std::println!(\"Release profile must have debug = 0\");
-        std::println!(\"Check: Cargo.toml [profile.release] section\");
-        std::println!(\"Run: wasm-objdump -h target/wasm32-unknown-unknown/release/*.wasm\");
-        std::println!(\"Verify no .debug_* sections present\");
+        std::println!("Release profile must have debug = 0");
+        std::println!("Check: Cargo.toml [profile.release] section");
+        std::println!("Run: wasm-objdump -h target/wasm32-unknown-unknown/release/*.wasm");
+        std::println!("Verify no .debug_* sections present");
     }
 
-    /// Verify opt-level = \"z\" for size optimization.
+    /// Verify opt-level = "z" for size optimization.
     ///
-    /// Size optimization (opt-level = \"z\") prioritizes binary size
+    /// Size optimization (opt-level = "z") prioritizes binary size
     /// over execution speed. For blockchain contracts where deployment
     /// cost is proportional to size, this is the correct choice.
     ///
-    /// Alternative: opt-level = \"s\" (also size-focused, slightly faster)
-    /// Not recommended: opt-level = \"z\" vs \"s\" - \"z\" is smaller
+    /// Alternative: opt-level = "s" (also size-focused, slightly faster)
+    /// Not recommended: opt-level = "z" vs "s" - "z" is smaller
     #[test]
     fn release_profile_size_optimization() {
-        std::println!(\"Release profile should use opt-level = \\\"z\\\" for size\");
-        std::println!(\"Check: Cargo.toml [profile.release] section\");
+        std::println!("Release profile should use opt-level = \"z\" for size");
+        std::println!("Check: Cargo.toml [profile.release] section");
     }
 
-    /// Verify strip = \"symbols\" removes debug symbols.
+    /// Verify strip = "symbols" removes debug symbols.
     ///
     /// Even with debug = 0, symbol names may still be present.
-    /// strip = \"symbols\" explicitly removes them from the binary.
+    /// strip = "symbols" explicitly removes them from the binary.
     #[test]
     fn release_profile_strip_symbols() {
-        std::println!(\"Release profile should have strip = \\\"symbols\\\"\");
-        std::println!(\"Check: Cargo.toml [profile.release] section\");
+        std::println!("Release profile should have strip = \"symbols\"");
+        std::println!("Check: Cargo.toml [profile.release] section");
     }
 
     /// Verify codegen-units = 1 for better optimization.
@@ -816,8 +816,8 @@ mod wasm_size_edge_cases {
     /// Trade-off: Compile time increases significantly
     #[test]
     fn release_profile_single_codegen_unit() {
-        std::println!(\"Release profile should have codegen-units = 1\");
-        std::println!(\"Check: Cargo.toml [profile.release] section\");
+        std::println!("Release profile should have codegen-units = 1");
+        std::println!("Check: Cargo.toml [profile.release] section");
     }
 
     /// Verify LTO is enabled for cross-crate optimization.
@@ -828,8 +828,8 @@ mod wasm_size_edge_cases {
     /// This significantly reduces size for contracts with dependencies.
     #[test]
     fn release_profile_lto_enabled() {
-        std::println!(\"Release profile should have lto = true\");
-        std::println!(\"Check: Cargo.toml [profile.release] section\");
+        std::println!("Release profile should have lto = true");
+        std::println!("Check: Cargo.toml [profile.release] section");
     }
 
     /// Verify debug-assertions = false for production.
@@ -838,8 +838,8 @@ mod wasm_size_edge_cases {
     /// should not be present in production WASM binaries.
     #[test]
     fn release_profile_no_debug_assertions() {
-        std::println!(\"Release profile should have debug-assertions = false\");
-        std::println!(\"Check: Cargo.toml [profile.release] section\");
+        std::println!("Release profile should have debug-assertions = false");
+        std::println!("Check: Cargo.toml [profile.release] section");
     }
 
     /// Verify overflow-checks = true for safety.
@@ -849,9 +849,9 @@ mod wasm_size_edge_cases {
     /// the small size savings from disabled overflow checks.
     #[test]
     fn release_profile_overflow_checks_enabled() {
-        std::println!(\"Release profile should have overflow-checks = true\");
-        std::println!(\"Check: Cargo.toml [profile.release] section\");
-        std::println!(\"Safety: Integer overflow can cause financial bugs\");
+        std::println!("Release profile should have overflow-checks = true");
+        std::println!("Check: Cargo.toml [profile.release] section");
+        std::println!("Safety: Integer overflow can cause financial bugs");
     }
 }
 
@@ -870,14 +870,14 @@ fn fee_operation_bounded_storage() {
     // Submit multiple attestations with fees
     // Storage should remain bounded per attestation
     for i in 0..5 {
-        let period = String::from_str(&env, &std::format!(\"2026-{:02}\", i + 1));
+        let period = String::from_str(&env, &std::format!("2026-{:02}", i + 1));
         let root = BytesN::from_array(&env, &[i as u8; 32]);
-        client.submit_attestation(&business, &period, &root, &1_700_000_000u64, &1u32, &None, &None);
+        client.submit_attestation(&business, &period, &root, &1_700_000_000u64, &1u32, &None, &None, &0u64);
     }
 
     // Fee storage should not grow unbounded
     // Each attestation should have fixed-size fee data
-    std::println!(\"Fee storage bounded: 5 attestations submitted\");
+    std::println!("Fee storage bounded: 5 attestations submitted");
 }
 
 /// Test batch submission doesn't cause exponential storage growth.
@@ -896,16 +896,16 @@ fn batch_submission_linear_scaling() {
         let before = BudgetSnapshot::capture(&env);
 
         for i in 0..size {
-            let period = String::from_str(&env, &std::format!(\"2026-batch-{}-{:02}\", size, i));
+            let period = String::from_str(&env, &std::format!("2026-batch-{}-{:02}", size, i));
             let root = BytesN::from_array(&env, &[i as u8; 32]);
-            client.submit_attestation(&business, &period, &root, &1_700_000_000u64, &1u32, &None, &None);
+            client.submit_attestation(&business, &period, &root, &1_700_000_000u64, &1u32, &None, &None, &0u64);
         }
 
         let after = BudgetSnapshot::capture(&env);
         let cost = before.delta(&after);
 
         // Cost should scale roughly linearly with batch size
-        std::println!(\"Batch size {}: CPU {} Mem {}\", size, cost.cpu_insns, cost.mem_bytes);
+        std::println!("Batch size {}: CPU {} Mem {}", size, cost.cpu_insns, cost.mem_bytes);
 
         // Linear scaling means each addition costs similar amount
         // If cost per item grows with batch size, indicates O(n²) or worse
@@ -920,22 +920,22 @@ fn batch_submission_linear_scaling() {
 fn migration_does_not_accumulate() {
     let (env, client, admin) = setup_basic();
     let business = Address::generate(&env);
-    let period = String::from_str(&env, \"2026-03\");
+    let period = String::from_str(&env, "2026-03");
 
     // Initial submission
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
-    client.submit_attestation(&business, &period, &root1, &1_700_000_000u64, &1u32, &None, &None);
+    client.submit_attestation(&business, &period, &root1, &1_700_000_000u64, &1u32, &None, &None, &0u64);
 
     // Multiple migrations
     for version in 2..=5 {
         let new_root = BytesN::from_array(&env, &[version as u8; 32]);
-        client.migrate_attestation(&admin, &business, &period, &new_root, &version);
+        client.migrate_attestation(&admin, &business, &period, &new_root, &version, &0u64);
     }
 
     // Should still have only one attestation stored
     // Migration updates existing entry, doesn't add new ones
     let result = client.get_attestation(&business, &period);
-    assert!(result.is_some(), \"Attestation should exist after migrations\");
+    assert!(result.is_some(), "Attestation should exist after migrations");
 }
 
 /// Test that revocation doesn't add unexpected storage.
@@ -950,16 +950,16 @@ fn revocation_linear_storage() {
     // Create multiple attestations
     let mut periods = Vec::new(&env);
     for i in 0..10 {
-        let period = String::from_str(&env, &std::format!(\"2026-rev-{:02}\", i));
+        let period = String::from_str(&env, &std::format!("2026-rev-{:02}", i));
         let root = BytesN::from_array(&env, &[i as u8; 32]);
-        client.submit_attestation(&business, &period, &root, &1_700_000_000u64, &1u32, &None, &None);
+        client.submit_attestation(&business, &period, &root, &1_700_000_000u64, &1u32, &None, &None, &0u64);
         periods.push_back(period);
     }
 
     // Revoke all - storage should remain bounded
     for period in periods.iter() {
-        client.revoke_attestation(&admin, &business, period, &String::from_str(&env, \"test\"), &1u64);
+        client.revoke_attestation(&admin, &business, period, &String::from_str(&env, "test"), &1u64);
     }
 
-    std::println!(\"10 attestations revoked, storage remains bounded\");
+    std::println!("10 attestations revoked, storage remains bounded");
 }

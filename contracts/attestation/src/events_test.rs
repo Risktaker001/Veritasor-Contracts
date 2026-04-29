@@ -688,27 +688,46 @@ fn test_revoke_nonexistent_attestation_panics() {
 }
 
 #[test]
-#[should_panic(expected = "attestation already exists")]
 fn test_duplicate_attestation_panics_no_double_event() {
     let (env, client, _admin) = setup();
     let business = Address::generate(&env);
     let period = String::from_str(&env, "2026-02");
-    // First submit
+
     submit_default(&client, &env, &business, &period, 0);
-    // Second submit for same period must panic — no event should be emitted
-    submit_default(&client, &env, &business, &period, 1);
+    let events_after_first = env.events().all().len();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        submit_default(&client, &env, &business, &period, 1);
+    }));
+
+    assert!(result.is_err(), "expected duplicate submission to panic");
+    assert_eq!(
+        env.events().all().len(),
+        events_after_first,
+        "failed duplicate submission must not emit an additional event"
+    );
 }
 
 #[test]
-#[should_panic(expected = "new version must be greater than old version")]
 fn test_migrate_same_version_panics_no_event() {
     let (env, client, admin) = setup();
     let business = Address::generate(&env);
     let period = String::from_str(&env, "2026-02");
     submit_default(&client, &env, &business, &period, 0);
     let new_root = BytesN::from_array(&env, &[2u8; 32]);
-    // Same version — must panic before event is emitted
-    client.migrate_attestation(&admin, &business, &period, &new_root, &1u32, &1u64);
+
+    let events_before_migration = env.events().all().len();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.migrate_attestation(&admin, &business, &period, &new_root, &1u32, &1u64);
+    }));
+
+    assert!(result.is_err(), "expected same-version migration to panic");
+    assert_eq!(
+        env.events().all().len(),
+        events_before_migration,
+        "failed migration must not emit an additional event"
+    );
 }
 
 #[test]

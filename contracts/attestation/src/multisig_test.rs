@@ -468,7 +468,7 @@ fn test_multiple_proposals_independent() {
 }
 
 #[test]
-#[should_panic(expected = 'proposal is not pending')]
+#[should_panic(expected = "proposal is not pending")]
 fn test_cannot_approve_rejected_proposal() {
     let (_env, client, admin, owners) = setup_with_multisig();
     let owner2 = owners.get(1).unwrap();
@@ -480,7 +480,7 @@ fn test_cannot_approve_rejected_proposal() {
 }
 
 #[test]
-#[should_panic(expected = 'proposal is not pending')]
+#[should_panic(expected = "proposal is not pending")]
 fn test_cannot_execute_rejected_proposal() {
     let (_env, client, admin, owners) = setup_with_multisig();
     let owner2 = owners.get(1).unwrap();
@@ -551,7 +551,7 @@ fn test_threshold_rotation() {
 }
 
 #[test]
-#[should_panic(expected = 'new threshold cannot exceed number of owners')]
+#[should_panic(expected = "new threshold cannot exceed number of owners")]
 fn test_threshold_rotation_invalid_exceeds_owners() {
     let (_env, client, admin, owners) = setup_with_multisig();
 
@@ -563,4 +563,42 @@ fn test_threshold_rotation_invalid_exceeds_owners() {
     client.approve_proposal(&owner2, &proposal_id, &0u64);
     client.execute_proposal(&admin, &proposal_id, &1u64);
 }
+
+#[test]
+fn test_owner_cannot_approve_twice() {
+    let env = Env::default();
+
+    let owner = Address::generate(&env);
+
+    let id = create_proposal(&env, &owner, ProposalAction::Pause);
+
+    approve_proposal(&env, &owner, id);
+
+    let result = std::panic::catch_unwind(|| {
+        approve_proposal(&env, &owner, id);
+    });
+
+    assert!(result.is_err());
+}
+
+
+#[test]
+fn test_non_owner_cannot_approve() {
+    let env = Env::default();
+
+    let owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    let id = create_proposal(&env, &owner, ProposalAction::Pause);
+
+    let result = std::panic::catch_unwind(|| {
+        approve_proposal(&env, &attacker, id);
+    });
+
+    assert!(result.is_err());
+}
+
+
+
+
 

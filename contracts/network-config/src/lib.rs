@@ -5,6 +5,20 @@
 //! It allows for centralized network configuration management with governance
 //! controls and supports adding new networks without contract redeployment.
 //!
+//! ## Unknown network identifiers
+//!
+//! All write operations that target a specific `NetworkId` require the network to
+//! already be registered via [`NetworkConfigContract::set_network_config`].  Passing
+//! an unregistered (or previously removed) `NetworkId` to any mutating method panics
+//! with the message `"unknown network id: <id>"`.  Callers can guard against this
+//! with the read-only [`NetworkConfigContract::network_exists`] query before
+//! performing a write.
+//!
+//! [`NetworkConfigContract::get_contract_address`] distinguishes two failure modes:
+//! - Unknown `NetworkId` → `None` (network not registered).
+//! - Unknown `contract_name` or contract slot not populated → `None` (name not
+//!   recognised or `has_*` flag is `false`).
+//!
 //! ## Migration and rollback (operational model)
 //!
 //! There is no single on-chain `rollback` entrypoint. **Rollback** means governance
@@ -420,6 +434,13 @@ mod storage {
             .get(&DataKey::NetworkConfig(network_id))
     }
 
+    /// Returns `true` when `network_id` has been registered and not yet removed.
+    pub fn is_registered_network(env: &Env, network_id: NetworkId) -> bool {
+        env.storage()
+            .instance()
+            .has(&DataKey::NetworkConfig(network_id))
+    }
+
     pub fn get_registered_networks(env: &Env) -> Vec<NetworkId> {
         env.storage()
             .instance()
@@ -603,6 +624,20 @@ impl NetworkConfigContract {
     /// Require caller has governance role
     fn require_governance(env: &Env, caller: &Address) {
         access_control::require_governance(env, caller);
+    }
+
+    /// Panic with a descriptive message when `network_id` is not registered.
+    ///
+    /// # Panics
+    /// Panics with `"unknown network id: <id>"` when the network has never been
+    /// registered or has been removed.  This is the single authoritative guard
+    /// used by all write paths that target a specific network.
+    fn require_registered_network(env: &Env, network_id: NetworkId) {
+        assert!(
+            storage::is_registered_network(env, network_id),
+            "unknown network id: {}",
+            network_id
+        );
     }
 
     /// Get current implementation address
@@ -815,8 +850,8 @@ impl NetworkConfigContract {
 
         validation::validate_fee_policy(&fee_policy);
 
-        let mut config =
-            storage::get_network_config(&env, network_id).expect("network config not found");
+        Self::require_registered_network(&env, network_id);
+        let mut config = storage::get_network_config(&env, network_id).unwrap();
 
         config.fee_policy = fee_policy.clone();
         config.updated_at = env.ledger().timestamp();
@@ -868,8 +903,8 @@ impl NetworkConfigContract {
         access_control::require_governance(&env, &caller);
         access_control::require_not_paused(&env);
 
-        let mut config =
-            storage::get_network_config(&env, network_id).expect("network config not found");
+        Self::require_registered_network(&env, network_id);
+        let mut config = storage::get_network_config(&env, network_id).unwrap();
 
         config.contracts = contracts;
         config.updated_at = env.ledger().timestamp();
@@ -884,8 +919,8 @@ impl NetworkConfigContract {
         access_control::require_governance(&env, &caller);
         access_control::require_not_paused(&env);
 
-        let mut config =
-            storage::get_network_config(&env, network_id).expect("network config not found");
+        Self::require_registered_network(&env, network_id);
+        let mut config = storage::get_network_config(&env, network_id).unwrap();
 
         config.is_active = active;
         config.updated_at = env.ledger().timestamp();
@@ -901,8 +936,8 @@ impl NetworkConfigContract {
         access_control::require_not_paused(&env);
 
         if network_id != 0 {
-            let config =
-                storage::get_network_config(&env, network_id).expect("network config not found");
+            Self::require_registered_network(&env, network_id);
+            let config = storage::get_network_config(&env, network_id).unwrap();
             assert!(config.is_active, "cannot set inactive network as default");
         }
 
@@ -919,8 +954,8 @@ impl NetworkConfigContract {
         let default = storage::get_default_network(&env).unwrap_or(0);
         assert!(network_id != default, "cannot remove default network");
 
-        let config =
-            storage::get_network_config(&env, network_id).expect("network config not found");
+        Self::require_registered_network(&env, network_id);
+        let config = storage::get_network_config(&env, network_id).unwrap();
         assert!(
             !config.is_active,
             "cannot remove active network; deactivate first"
@@ -1036,6 +1071,14 @@ impl NetworkConfigContract {
 
     pub fn get_global_version(env: Env) -> u32 {
         storage::get_global_version(&env)
+    }
+
+    /// Returns `true` when `network_id` is currently registered.
+    ///
+    /// Use this as a pre-flight check before calling any write operation that
+    /// targets a specific network, to avoid the `"unknown network id"` panic.
+    pub fn network_exists(env: Env, network_id: NetworkId) -> bool {
+        storage::is_registered_network(&env, network_id)
     }
 
     pub fn get_admin(env: Env) -> Address {
