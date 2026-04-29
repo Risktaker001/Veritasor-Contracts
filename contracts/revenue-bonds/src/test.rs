@@ -30,21 +30,25 @@ fn setup_test() -> (Env, Address, Address, Address, Address, Address) {
 }
 
 /// Set the mock revenue for a (business, period) pair in the test environment.
-fn set_mock_revenue(env: &Env, business: &Address, period: &str, revenue: i128) {
+fn set_mock_revenue(env: &Env, contract: &Address, business: &Address, period: &str, revenue: i128) {
     let p = String::from_str(env, period);
-    env.storage().temporary().set(
-        &(soroban_sdk::symbol_short!("rev"), business.clone(), p),
-        &revenue,
-    );
+    env.as_contract(contract, || {
+        env.storage().temporary().set(
+            &(soroban_sdk::symbol_short!("rev"), business.clone(), p),
+            &revenue,
+        );
+    });
 }
 
 /// Mark an attestation as revoked in the test environment.
-fn set_mock_revoked(env: &Env, business: &Address, period: &str) {
+fn set_mock_revoked(env: &Env, contract: &Address, business: &Address, period: &str) {
     let p = String::from_str(env, period);
-    env.storage().temporary().set(
-        &(soroban_sdk::symbol_short!("rvkd"), business.clone(), p),
-        &true,
-    );
+    env.as_contract(contract, || {
+        env.storage().temporary().set(
+            &(soroban_sdk::symbol_short!("rvkd"), business.clone(), p),
+            &true,
+        );
+    });
 }
 
 fn issue_period(env: &Env) -> String {
@@ -82,8 +86,16 @@ fn test_issue_bond_fixed_structure() {
     client.initialize(&admin);
 
     let bond_id = client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
     assert_eq!(bond_id, 0);
     let bond = client.get_bond(&bond_id).unwrap();
@@ -100,8 +112,16 @@ fn test_issue_bond_revenue_linked() {
     client.initialize(&admin);
 
     let bond_id = client.issue_bond(
-        &issuer, &owner, &5_000_000, &BondStructure::RevenueLinked,
-        &1000, &100_000, &1_000_000, &24, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 5_000_000,
+            structure: BondStructure::RevenueLinked,
+            revenue_share_bps: 1000,
+            min_payment_per_period: 100_000,
+            max_payment_per_period: 1_000_000,
+            maturity_periods: 24,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
     let bond = client.get_bond(&bond_id).unwrap();
     assert_eq!(bond.structure, BondStructure::RevenueLinked);
@@ -116,8 +136,16 @@ fn test_issue_bond_hybrid() {
     client.initialize(&admin);
 
     let bond_id = client.issue_bond(
-        &issuer, &owner, &8_000_000, &BondStructure::Hybrid,
-        &500, &200_000, &800_000, &18, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 8_000_000,
+            structure: BondStructure::Hybrid,
+            revenue_share_bps: 500,
+            min_payment_per_period: 200_000,
+            max_payment_per_period: 800_000,
+            maturity_periods: 18,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
     let bond = client.get_bond(&bond_id).unwrap();
     assert_eq!(bond.structure, BondStructure::Hybrid);
@@ -131,8 +159,16 @@ fn test_issue_bond_invalid_face_value() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
     client.issue_bond(
-        &issuer, &owner, &0, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 0,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
 }
 
@@ -144,8 +180,16 @@ fn test_issue_bond_invalid_revenue_share() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
     client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::RevenueLinked,
-        &10001, &100_000, &1_000_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::RevenueLinked,
+            revenue_share_bps: 10001,
+            min_payment_per_period: 100_000,
+            max_payment_per_period: 1_000_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
 }
 
@@ -157,8 +201,16 @@ fn test_issue_bond_invalid_payment_range() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
     client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
-        &0, &1_000_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 1_000_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
 }
 
@@ -172,14 +224,22 @@ fn test_redeem_fixed_bond() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
 
     let period = String::from_str(&env, "2026-02");
-    set_mock_revenue(&env, &issuer, "2026-02", 2_000_000);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-02", 2_000_000);
     client.redeem(&bond_id, &period);
 
     let rec = client.get_redemption(&bond_id, &period).unwrap();
@@ -194,13 +254,21 @@ fn test_redeem_revenue_linked_bond() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &5_000_000, &BondStructure::RevenueLinked,
-        &1000, &100_000, &1_000_000, &24, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 5_000_000,
+            structure: BondStructure::RevenueLinked,
+            revenue_share_bps: 1000,
+            min_payment_per_period: 100_000,
+            max_payment_per_period: 1_000_000,
+            maturity_periods: 24,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
 
-    set_mock_revenue(&env, &issuer, "2026-02", 5_000_000);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-02", 5_000_000);
     let period = String::from_str(&env, "2026-02");
     client.redeem(&bond_id, &period);
 
@@ -215,14 +283,22 @@ fn test_redeem_revenue_linked_below_minimum() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &5_000_000, &BondStructure::RevenueLinked,
-        &1000, &100_000, &1_000_000, &24, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 5_000_000,
+            structure: BondStructure::RevenueLinked,
+            revenue_share_bps: 1000,
+            min_payment_per_period: 100_000,
+            max_payment_per_period: 1_000_000,
+            maturity_periods: 24,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
 
     // 10% of 500_000 = 50_000 < min 100_000 → floors to min
-    set_mock_revenue(&env, &issuer, "2026-02", 500_000);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-02", 500_000);
     let period = String::from_str(&env, "2026-02");
     client.redeem(&bond_id, &period);
     assert_eq!(client.get_redemption(&bond_id, &period).unwrap().redemption_amount, 100_000);
@@ -235,14 +311,22 @@ fn test_redeem_revenue_linked_capped_at_max() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &5_000_000, &BondStructure::RevenueLinked,
-        &1000, &100_000, &1_000_000, &24, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 5_000_000,
+            structure: BondStructure::RevenueLinked,
+            revenue_share_bps: 1000,
+            min_payment_per_period: 100_000,
+            max_payment_per_period: 1_000_000,
+            maturity_periods: 24,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
 
     // 10% of 15_000_000 = 1_500_000 > max 1_000_000 → capped
-    set_mock_revenue(&env, &issuer, "2026-02", 15_000_000);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-02", 15_000_000);
     let period = String::from_str(&env, "2026-02");
     client.redeem(&bond_id, &period);
     assert_eq!(client.get_redemption(&bond_id, &period).unwrap().redemption_amount, 1_000_000);
@@ -255,14 +339,22 @@ fn test_redeem_hybrid_bond() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &8_000_000, &BondStructure::Hybrid,
-        &500, &200_000, &800_000, &18, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 8_000_000,
+            structure: BondStructure::Hybrid,
+            revenue_share_bps: 500,
+            min_payment_per_period: 200_000,
+            max_payment_per_period: 800_000,
+            maturity_periods: 18,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
 
     // min 200_000 + 5% of 10_000_000 = 200_000 + 500_000 = 700_000
-    set_mock_revenue(&env, &issuer, "2026-02", 10_000_000);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-02", 10_000_000);
     let period = String::from_str(&env, "2026-02");
     client.redeem(&bond_id, &period);
     assert_eq!(client.get_redemption(&bond_id, &period).unwrap().redemption_amount, 700_000);
@@ -273,29 +365,34 @@ fn test_redeem_hybrid_bond() {
 #[test]
 #[should_panic(expected = "attested_revenue must be non-negative")]
 fn test_redeem_rejects_negative_attested_revenue() {
-    let (env, admin, issuer, owner, token, attestation_contract, _) = setup_test();
+    let (env, admin, issuer, owner, token, attestation_contract) = setup_test();
     let contract_id = env.register(RevenueBondContract, ());
     let client = RevenueBondContractClient::new(&env, &contract_id);
 
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
         &issuer,
         &owner,
-        &10_000_000,
-        &BondStructure::Fixed,
-        &0,
-        &500_000,
-        &500_000,
-        &12,
-        &issue_period,
+        &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        },
         &attestation_contract,
         &token,
     );
 
     let period = String::from_str(&env, "2026-02");
-    client.redeem(&bond_id, &period, &-1);
+    // Explicitly inject a negative revenue value into the mock.
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-02", -1);
+    client.redeem(&bond_id, &period);
 }
 
 #[test]
@@ -306,14 +403,22 @@ fn test_redeem_double_spending_prevention() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
 
     let period = String::from_str(&env, "2026-02");
-    set_mock_revenue(&env, &issuer, "2026-02", 0);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-02", 0);
     client.redeem(&bond_id, &period);
     client.redeem(&bond_id, &period); // must panic
 }
@@ -327,14 +432,22 @@ fn test_multiple_period_redemptions() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
 
     for p in ["2026-01", "2026-02", "2026-03"] {
-        set_mock_revenue(&env, &issuer, p, 0);
+        set_mock_revenue(&env, &contract_id, &issuer, p, 0);
         client.redeem(&bond_id, &String::from_str(&env, p));
     }
 
@@ -349,14 +462,22 @@ fn test_full_redemption() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &1_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 1_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
 
     for p in ["2026-01", "2026-02"] {
-        set_mock_revenue(&env, &issuer, p, 0);
+        set_mock_revenue(&env, &contract_id, &issuer, p, 0);
         client.redeem(&bond_id, &String::from_str(&env, p));
     }
 
@@ -375,12 +496,20 @@ fn test_partial_redemption_caps_at_face_value() {
 
     // face_value=1_200_000, max_per_period=500_000 → 3 periods needed
     let bond_id = client.issue_bond(
-        &issuer, &owner, &1_200_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 1_200_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
 
     for p in ["2026-01", "2026-02", "2026-03"] {
-        set_mock_revenue(&env, &issuer, p, 0);
+        set_mock_revenue(&env, &contract_id, &issuer, p, 0);
         client.redeem(&bond_id, &String::from_str(&env, p));
     }
 
@@ -401,8 +530,16 @@ fn test_transfer_ownership() {
 
     let new_owner = Address::generate(&env);
     let bond_id = client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
     client.transfer_ownership(&bond_id, &owner, &new_owner);
     assert_eq!(client.get_owner(&bond_id).unwrap(), new_owner);
@@ -419,8 +556,16 @@ fn test_transfer_ownership_unauthorized() {
     let fake_owner = Address::generate(&env);
     let new_owner = Address::generate(&env);
     let bond_id = client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
     client.transfer_ownership(&bond_id, &fake_owner, &new_owner);
 }
@@ -537,10 +682,18 @@ fn test_mark_defaulted() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
     client.mark_defaulted(&admin, &bond_id);
     assert_eq!(client.get_bond(&bond_id).unwrap().status, BondStatus::Defaulted);
@@ -554,10 +707,18 @@ fn test_mark_defaulted_unauthorized() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
     client.mark_defaulted(&Address::generate(&env), &bond_id);
 }
@@ -571,11 +732,19 @@ fn test_redeem_defaulted_bond() {
     client.initialize(&admin);
 
     let bond_id = client.issue_bond(
-        &issuer, &owner, &10_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 10_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
     client.mark_defaulted(&admin, &bond_id);
-    set_mock_revenue(&env, &issuer, "2026-02", 0);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-02", 0);
     client.redeem(&bond_id, &String::from_str(&env, "2026-02"));
 }
 
@@ -590,12 +759,20 @@ fn test_redeem_revoked_attestation_panics() {
     client.initialize(&admin);
 
     let bond_id = client.issue_bond(
-        &issuer, &owner, &5_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 5_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
 
     // Attestation is revoked mid-cycle before redemption.
-    set_mock_revoked(&env, &issuer, "2026-03");
+    set_mock_revoked(&env, &contract_id, &issuer, "2026-03");
     client.redeem(&bond_id, &String::from_str(&env, "2026-03"));
 }
 
@@ -607,14 +784,22 @@ fn test_redeem_succeeds_for_non_revoked_period_after_other_revoked() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &5_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 5_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
 
-    set_mock_revoked(&env, &issuer, "2026-02");
-    set_mock_revenue(&env, &issuer, "2026-03", 0);
+    set_mock_revoked(&env, &contract_id, &issuer, "2026-02");
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-03", 0);
     // 2026-03 is not revoked — must succeed.
     client.redeem(&bond_id, &String::from_str(&env, "2026-03"));
     assert_eq!(client.get_total_redeemed(&bond_id), 500_000);
@@ -633,15 +818,23 @@ fn test_per_period_cap_not_exceeded_on_last_partial() {
     client.initialize(&admin);
 
     let bond_id = client.issue_bond(
-        &issuer, &owner, &700_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 700_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
 
-    set_mock_revenue(&env, &issuer, "2026-01", 0);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-01", 0);
     client.redeem(&bond_id, &String::from_str(&env, "2026-01"));
     assert_eq!(client.get_total_redeemed(&bond_id), 500_000);
 
-    set_mock_revenue(&env, &issuer, "2026-02", 0);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-02", 0);
     client.redeem(&bond_id, &String::from_str(&env, "2026-02"));
     // Last partial: 200_000 transferred, bond fully redeemed.
     assert_eq!(client.get_total_redeemed(&bond_id), 700_000);
@@ -660,11 +853,19 @@ fn test_revenue_is_read_from_attestation_not_caller() {
     client.initialize(&admin);
 
     let bond_id = client.issue_bond(
-        &issuer, &owner, &5_000_000, &BondStructure::RevenueLinked,
-        &1000, &100_000, &1_000_000, &24, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 5_000_000,
+            structure: BondStructure::RevenueLinked,
+            revenue_share_bps: 1000,
+            min_payment_per_period: 100_000,
+            max_payment_per_period: 1_000_000,
+            maturity_periods: 24,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
 
-    set_mock_revenue(&env, &issuer, "2026-02", 8_000_000);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-02", 8_000_000);
     let period = String::from_str(&env, "2026-02");
     client.redeem(&bond_id, &period);
 
@@ -684,13 +885,21 @@ fn test_early_redemption_scenario() {
     client.initialize(&admin);
 
     let bond_id = client.issue_bond(
-        &issuer, &owner, &4_500_000, &BondStructure::RevenueLinked,
-        &2000, &100_000, &2_000_000, &24, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 4_500_000,
+            structure: BondStructure::RevenueLinked,
+            revenue_share_bps: 2000,
+            min_payment_per_period: 100_000,
+            max_payment_per_period: 2_000_000,
+            maturity_periods: 24,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
 
     // 20% of 8_000_000 = 1_600_000; 20% of 10_000_000 = 2_000_000; 20% of 5_000_000 = 1_000_000
     for (p, rev) in [("2026-01", 8_000_000i128), ("2026-02", 10_000_000), ("2026-03", 5_000_000)] {
-        set_mock_revenue(&env, &issuer, p, rev);
+        set_mock_revenue(&env, &contract_id, &issuer, p, rev);
         client.redeem(&bond_id, &String::from_str(&env, p));
     }
 
@@ -705,14 +914,22 @@ fn test_zero_revenue_hybrid_pays_minimum() {
     let client = RevenueBondContractClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let issue_period = String::from_str(&env, "2026-01");
+    let ip = String::from_str(&env, "2026-01");
     let bond_id = client.issue_bond(
-        &issuer, &owner, &3_000_000, &BondStructure::Hybrid,
-        &500, &200_000, &800_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 3_000_000,
+            structure: BondStructure::Hybrid,
+            revenue_share_bps: 500,
+            min_payment_per_period: 200_000,
+            max_payment_per_period: 800_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: ip,
+        }, &attestation_contract, &token,
     );
 
     // revenue=0 → min + 0 = 200_000
-    set_mock_revenue(&env, &issuer, "2026-01", 0);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-01", 0);
     let period = String::from_str(&env, "2026-01");
     client.redeem(&bond_id, &period);
     assert_eq!(client.get_redemption(&bond_id, &period).unwrap().redemption_amount, 200_000);
@@ -727,11 +944,19 @@ fn test_max_i128_revenue_does_not_overflow() {
     client.initialize(&admin);
 
     let bond_id = client.issue_bond(
-        &issuer, &owner, &5_000_000, &BondStructure::RevenueLinked,
-        &1000, &0, &1_000_000, &24, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 5_000_000,
+            structure: BondStructure::RevenueLinked,
+            revenue_share_bps: 1000,
+            min_payment_per_period: 0,
+            max_payment_per_period: 1_000_000,
+            maturity_periods: 24,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
 
-    set_mock_revenue(&env, &issuer, "2026-01", i128::MAX);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-01", i128::MAX);
     let period = String::from_str(&env, "2026-01");
     client.redeem(&bond_id, &period);
     // saturating_mul caps at u128::MAX then cast to i128 → clamped to max_payment_per_period
@@ -746,13 +971,21 @@ fn test_out_of_order_period_redemption() {
     client.initialize(&admin);
 
     let bond_id = client.issue_bond(
-        &issuer, &owner, &2_000_000, &BondStructure::Fixed,
-        &0, &500_000, &500_000, &12, &issue_period(&env), &attestation_contract, &token,
+        &issuer, &owner, &BondTerms {
+            face_value: 2_000_000,
+            structure: BondStructure::Fixed,
+            revenue_share_bps: 0,
+            min_payment_per_period: 500_000,
+            max_payment_per_period: 500_000,
+            maturity_periods: 12,
+            grace_period_seconds: 0,
+            issue_period: issue_period(&env),
+        }, &attestation_contract, &token,
     );
 
     // Redeem a later period first, then an earlier one — both must succeed.
-    set_mock_revenue(&env, &issuer, "2026-03", 0);
-    set_mock_revenue(&env, &issuer, "2026-01", 0);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-03", 0);
+    set_mock_revenue(&env, &contract_id, &issuer, "2026-01", 0);
     client.redeem(&bond_id, &String::from_str(&env, "2026-03"));
     client.redeem(&bond_id, &String::from_str(&env, "2026-01"));
     assert_eq!(client.get_total_redeemed(&bond_id), 1_000_000);

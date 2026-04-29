@@ -55,13 +55,12 @@ mod attestation_import {
             business: &Address,
             period: &String,
         ) -> Option<(BytesN<32>, u64, u32, i128)> {
-            let revenue: i128 = self
+            let revenue_opt: Option<i128> = self
                 .env
                 .storage()
                 .temporary()
-                .get(&(soroban_sdk::symbol_short!("rev"), business.clone(), period.clone()))
-                .unwrap_or(0i128);
-            Some((BytesN::from_array(&self.env, &[0u8; 32]), 1000, 1, revenue))
+                .get(&(soroban_sdk::symbol_short!("rev"), business.clone(), period.clone()));
+            revenue_opt.map(|revenue| (BytesN::from_array(&self.env, &[0u8; 32]), 1000, 1, revenue))
         }
 
         pub fn is_revoked(&self, business: &Address, period: &String) -> bool {
@@ -143,6 +142,24 @@ pub struct Bond {
     pub token: Address,
     pub status: BondStatus,
     pub issued_at: u64,
+    pub grace_period_seconds: u64,
+    pub issue_period: String,
+}
+
+/// Parameters for issuing a new bond.
+///
+/// Grouped into a struct to comply with Soroban's 10-parameter limit.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BondTerms {
+    pub face_value: i128,
+    pub structure: BondStructure,
+    pub revenue_share_bps: u32,
+    pub min_payment_per_period: i128,
+    pub max_payment_per_period: i128,
+    pub maturity_periods: u32,
+    pub grace_period_seconds: u64,
+    pub issue_period: String,
 }
 
 /// Immutable record of a single period's redemption.
@@ -169,8 +186,9 @@ pub struct RedemptionRecord {
 /// # Panics
 /// Panics with a descriptive message on any malformed input.
 pub fn parse_period(env: &Env, period: String) -> u64 {
-    let bytes = period.to_bytes();
-    assert!(bytes.len() == 7, "invalid period length");
+    assert!(period.len() == 7, "invalid period length");
+    let mut bytes = [0u8; 7];
+    period.copy_into_slice(&mut bytes);
     assert!(bytes[4] == b'-', "invalid period separator");
     let mut year = 0u64;
     for i in 0..4 {
@@ -186,6 +204,61 @@ pub fn parse_period(env: &Env, period: String) -> u64 {
     }
     assert!(month >= 1 && month <= 12, "invalid month");
     year * 12 + month - 1
+}
+
+/// Helper to determine if a year is a leap year.
+fn is_leap_year(year: u64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+/// Helper to get the number of days in a given month.
+fn days_in_month(year: u64, month: u64) -> u64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => panic!("invalid month"),
+    }
+}
+
+/// Returns the unix timestamp (seconds) for the start of the month following `period`.
+///
+/// Example: "2024-05" -> Start of 2024-06-01 00:00:00.
+pub fn get_period_end_timestamp(period: String) -> u64 {
+    assert!(period.len() == 7, "invalid period length");
+    let mut bytes = [0u8; 7];
+    period.copy_into_slice(&mut bytes);
+    let mut year = 0u64;
+    for i in 0..4 {
+        year = year * 10 + (bytes[i] as u64 - b'0' as u64);
+    }
+    let mut month = 0u64;
+    for i in 0..2 {
+        month = month * 10 + (bytes[5 + i] as u64 - b'0' as u64);
+    }
+
+    // Move to next month
+    let mut end_month = month + 1;
+    let mut end_year = year;
+    if end_month > 12 {
+        end_month = 1;
+        end_year += 1;
+    }
+
+    let mut total_days = 0;
+    for y in 1970..end_year {
+        total_days += if is_leap_year(y) { 366 } else { 365 };
+    }
+    for m in 1..end_month {
+        total_days += days_in_month(end_year, m);
+    }
+    total_days * 86400
 }
 
 /// Returns `true` iff `period` falls within `[issue_period, issue_period + maturity_periods)`.
@@ -254,6 +327,7 @@ impl RevenueBondContract {
     /// * `max_payment_per_period` – Ceiling / per-period cap (> 0, ≥ min).
     /// * `maturity_periods` – Calendar months the bond is active (> 0).
     /// * `issue_period` – First eligible redemption period (`"YYYY-MM"`).
+    /// * `terms` – Bond parameters.
     /// * `attestation_contract` – Revenue attestation contract address.
     /// * `token` – Soroban token used for repayments.
     ///
@@ -263,23 +337,18 @@ impl RevenueBondContract {
         env: Env,
         issuer: Address,
         initial_owner: Address,
-        face_value: i128,
-        structure: BondStructure,
-        revenue_share_bps: u32,
-        min_payment_per_period: i128,
-        max_payment_per_period: i128,
-        maturity_periods: u32,
+        terms: BondTerms,
         attestation_contract: Address,
         token: Address,
     ) -> u64 {
         issuer.require_auth();
 
-        assert!(face_value > 0, "face_value must be positive");
-        assert!(revenue_share_bps <= 10000, "revenue_share_bps must be <= 10000");
-        assert!(min_payment_per_period >= 0, "min_payment_per_period must be non-negative");
-        assert!(max_payment_per_period > 0, "max_payment_per_period must be positive");
-        assert!(max_payment_per_period >= min_payment_per_period, "max must be >= min");
-        assert!(maturity_periods > 0, "maturity_periods must be positive");
+        assert!(terms.face_value > 0, "face_value must be positive");
+        assert!(terms.revenue_share_bps <= 10000, "revenue_share_bps must be <= 10000");
+        assert!(terms.min_payment_per_period >= 0, "min_payment_per_period must be non-negative");
+        assert!(terms.max_payment_per_period > 0, "max_payment_per_period must be positive");
+        assert!(terms.max_payment_per_period >= terms.min_payment_per_period, "max must be >= min");
+        assert!(terms.maturity_periods > 0, "maturity_periods must be positive");
         assert!(!issuer.eq(&initial_owner), "issuer and owner must differ");
 
         let id: u64 = env.storage().instance().get(&DataKey::NextBondId).unwrap_or(0);
@@ -287,17 +356,18 @@ impl RevenueBondContract {
         let bond = Bond {
             id,
             issuer,
-            face_value,
-            structure,
-            revenue_share_bps,
-            min_payment_per_period,
-            max_payment_per_period,
-            maturity_periods,
-            issue_period,
+            face_value: terms.face_value,
+            structure: terms.structure,
+            revenue_share_bps: terms.revenue_share_bps,
+            min_payment_per_period: terms.min_payment_per_period,
+            max_payment_per_period: terms.max_payment_per_period,
+            maturity_periods: terms.maturity_periods,
+            issue_period: terms.issue_period,
             attestation_contract,
             token,
             status: BondStatus::Active,
             issued_at: env.ledger().timestamp(),
+            grace_period_seconds: terms.grace_period_seconds,
         };
 
         env.storage().instance().set(&DataKey::Bond(id), &bond);
