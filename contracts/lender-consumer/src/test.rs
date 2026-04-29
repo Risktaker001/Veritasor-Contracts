@@ -735,3 +735,68 @@ fn test_multiple_businesses_same_period() {
         assert_eq!(lender_client.get_revenue(&business, &period), Some(revenue));
     }
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  Integration Safety Status Tests
+// ════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_revenue_safety_status_combinations() {
+    let (env, core_client, access_list_client, lender_client, admin) = setup();
+    
+    let lender = Address::generate(&env);
+    access_list_client.set_lender(&admin, &lender, &1u32, &lender_meta(&env, "Lender"));
+    
+    let lender_tier2 = Address::generate(&env);
+    access_list_client.set_lender(&admin, &lender_tier2, &2u32, &lender_meta(&env, "Tier2"));
+
+    let business = Address::generate(&env);
+    let period = String::from_str(&env, "2026-03");
+    let revenue: i128 = 5_000_000;
+
+    // 1. Initial State: Not Verified -> Not Safe
+    let status = lender_client.get_revenue_safety_status(&business, &period);
+    assert!(!status.is_safe);
+    assert!(!status.is_verified);
+
+    // 2. Verified: Valid Attestation + Revenue Submitted -> Safe
+    submit_attestation(&env, &core_client, &business, "2026-03", revenue, None);
+    lender_client.submit_revenue(&lender, &business, &period, &revenue);
+    
+    let status = lender_client.get_revenue_safety_status(&business, &period);
+    assert!(status.is_safe);
+    assert!(status.is_verified);
+    assert!(!status.is_disputed);
+
+    // 3. Disputed: Safety False
+    lender_client.set_dispute(&lender_tier2, &business, &period, &true);
+    let status = lender_client.get_revenue_safety_status(&business, &period);
+    assert!(!status.is_safe);
+    assert!(status.is_disputed);
+
+    // 4. Resolve Dispute -> Safe again
+    lender_client.set_dispute(&lender_tier2, &business, &period, &false);
+    let status = lender_client.get_revenue_safety_status(&business, &period);
+    assert!(status.is_safe);
+
+    // 5. Anomaly (Negative Revenue) -> Not Safe
+    let neg_rev: i128 = -1000;
+    let period_neg = String::from_str(&env, "2026-04");
+    submit_attestation(&env, &core_client, &business, "2026-04", neg_rev, None);
+    lender_client.submit_revenue(&lender, &business, &period_neg, &neg_rev);
+    
+    let status = lender_client.get_revenue_safety_status(&business, &period_neg);
+    assert!(!status.is_safe);
+    assert!(status.has_anomaly);
+
+    // 6. Expired -> Not Safe
+    let period_exp = String::from_str(&env, "2026-05");
+    submit_attestation(&env, &core_client, &business, "2026-05", revenue, Some(100));
+    lender_client.submit_revenue(&lender, &business, &period_exp, &revenue);
+    
+    env.ledger().set_timestamp(1000); // Pass expiry
+    let status = lender_client.get_revenue_safety_status(&business, &period_exp);
+    assert!(status.is_expired);
+    assert!(!status.is_safe);
+}
+
