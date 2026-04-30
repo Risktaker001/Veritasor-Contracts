@@ -79,6 +79,7 @@ pub struct Proposal {
 //  Owner Management
 // ════════════════════════════════════════════════════════════════════
 
+/// Get the list of multisig owners.
 pub fn get_owners(env: &Env) -> Vec<Address> {
     env.storage()
         .instance()
@@ -102,13 +103,22 @@ pub fn get_threshold(env: &Env) -> u32 {
         .unwrap_or(1)
 }
 
-pub fn initialize_multisig(env: &Env, owners: &Vec<Address>, threshold: u32, _nonce: u64) {
-    if env.storage().instance().has(&MultisigKey::Owners) {
-        panic!("multisig already initialized");
-    }
-    assert!(!owners.is_empty(), "must provide at least one owner");
-    assert!(threshold > 0 && threshold <= owners.len(), "invalid threshold");
-    
+pub fn rotate_threshold(env: &Env, new_threshold: u32) {
+    let owners = get_owners(env);
+    assert!(
+        new_threshold > 0 && new_threshold <= owners.len(),
+        "new threshold cannot exceed number of owners"
+    );
+    env.storage()
+        .instance()
+        .set(&MultisigKey::Threshold, &new_threshold);
+}
+
+pub fn initialize_multisig(env: &Env, owners: &Vec<Address>, threshold: u32) {
+    assert!(
+        !env.storage().instance().has(&MultisigKey::Owners),
+        "multisig already initialized"
+    );
     set_owners(env, owners);
     env.storage()
         .instance()
@@ -138,7 +148,7 @@ pub fn create_proposal(env: &Env, proposer: &Address, action: ProposalAction) ->
         action,
         proposer: proposer.clone(),
         status: ProposalStatus::Pending,
-        created_at,
+        created_at: env.ledger().sequence(),
     };
     env.storage()
         .instance()
@@ -240,6 +250,11 @@ pub fn mark_executed(env: &Env, id: u64) {
     env.storage()
         .instance()
         .set(&MultisigKey::Proposal(id), &proposal);
+}
+
+/// Check if multisig is initialized.
+pub fn is_multisig_initialized(env: &Env) -> bool {
+    env.storage().instance().has(&MultisigKey::Owners)
 }
 
 pub fn require_owner(env: &Env, caller: &Address) {

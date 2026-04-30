@@ -198,25 +198,13 @@ pub const TOPIC_ADM_XFER: Symbol = symbol_short!("adm_xfer");
 //    4. Field order is stable; new optional fields go at the END only.
 // ════════════════════════════════════════════════════════════════════
 
-/// Payload for `lnd_new` events (first enrollment via `set_lender`).
-///
-/// Emitted when a lender address is enrolled for the first time. There is
-/// no `previous_tier` or `previous_status` because no prior record exists.
-/// Use `lnd_set` events for subsequent updates.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct LenderEnrolledEvent {
-    /// The lender address being enrolled.
-    pub lender: Address,
-    /// Initial tier value.
-    pub tier: u32,
-    /// Initial status (Active when tier > 0, Removed when tier == 0).
-    pub status: LenderStatus,
-    /// Address that authorized the enrollment.
-    pub changed_by: Address,
-    /// Ledger sequence at enrollment time (mirrors `Lender::added_at`).
-    pub enrolled_at: u32,
-}
+const TOPIC_LENDER_SET: Symbol = symbol_short!("lnd_set");
+const TOPIC_LENDER_REMOVED: Symbol = symbol_short!("lnd_rem");
+const TOPIC_GOV_GRANTED: Symbol = symbol_short!("gov_add");
+const TOPIC_GOV_REVOKED: Symbol = symbol_short!("gov_del");
+/// Delegated admin events.
+const TOPIC_DELEGATED_ADMIN_GRANTED: Symbol = symbol_short!("dlg_ad_gr");
+const TOPIC_DELEGATED_ADMIN_REVOKED: Symbol = symbol_short!("dlg_ad_rv");
 
 /// Payload for `lnd_set` events (update of an existing lender record).
 ///

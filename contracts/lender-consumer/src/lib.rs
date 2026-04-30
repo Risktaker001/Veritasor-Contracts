@@ -200,10 +200,12 @@ impl LenderConsumerContract {
     /// A `VerificationResult` with validity status and rejection reason.
     pub fn verify_with_safeguards(
         env: Env,
+        lender: Address,
         business: Address,
         period: String,
         merkle_root: BytesN<32>,
     ) -> VerificationResult {
+        Self::require_lender_tier(&env, &lender, 1);
         let core_addr = Self::get_core_address(env.clone());
         let client = AttestationClient::new(&env, &core_addr);
 
@@ -236,7 +238,7 @@ impl LenderConsumerContract {
         }
 
         // Check for active dispute
-        if Self::get_dispute_status(env.clone(), business.clone(), period.clone()) {
+        if Self::get_dispute_status_internal(&env, business.clone(), period.clone()) {
             return VerificationResult {
                 is_valid: false,
                 rejection_reason: REJECTION_DISPUTED,
@@ -272,9 +274,11 @@ impl LenderConsumerContract {
     /// - Anomaly flag status
     pub fn get_attestation_health(
         env: Env,
+        lender: Address,
         business: Address,
         period: String,
     ) -> AttestationHealth {
+        Self::require_lender_tier(&env, &lender, 1);
         let core_addr = Self::get_core_address(env.clone());
         let client = AttestationClient::new(&env, &core_addr);
 
@@ -293,12 +297,12 @@ impl LenderConsumerContract {
             false
         };
 
-        let is_disputed = Self::get_dispute_status(env.clone(), business.clone(), period.clone());
+        let is_disputed = Self::get_dispute_status_internal(&env, business.clone(), period.clone());
         let has_revenue = env
             .storage()
             .instance()
             .has(&DataKey::VerifiedRevenue(business.clone(), period.clone()));
-        let has_anomaly = Self::is_anomaly(env, business, period);
+        let has_anomaly = Self::is_anomaly_internal(&env, business, period);
 
         AttestationHealth {
             exists,
@@ -336,9 +340,9 @@ impl LenderConsumerContract {
         let payload = soroban_sdk::Bytes::from_slice(&env, &buf);
         let calculated_root: BytesN<32> = env.crypto().sha256(&payload).into();
 
-        // Verify with safeguards
-        let result = Self::verify_with_safeguards(
-            env.clone(),
+        // Verify with safeguards - using internal verification logic to avoid redundant auth
+        let result = Self::verify_with_safeguards_internal(
+            &env,
             business.clone(),
             period.clone(),
             calculated_root.clone(),
@@ -363,9 +367,6 @@ impl LenderConsumerContract {
         );
 
         // Check for anomalies
-        // Anomaly conditions:
-        // 1. Negative revenue
-        // 2. Zero revenue (may indicate missing data)
         if revenue < 0 {
             env.storage()
                 .instance()
@@ -374,6 +375,69 @@ impl LenderConsumerContract {
             env.storage()
                 .instance()
                 .set(&DataKey::Anomaly(business.clone(), period.clone()), &false);
+        }
+    }
+
+    fn verify_with_safeguards_internal(
+        env: &Env,
+        business: Address,
+        period: String,
+        merkle_root: BytesN<32>,
+    ) -> VerificationResult {
+        let core_addr = env.storage().instance().get::<_, Address>(&DataKey::CoreAddress).expect("not initialized");
+        let client = AttestationClient::new(env, &core_addr);
+
+        // Check if attestation exists
+        let attestation = client.get_attestation(&business, &period);
+        if attestation.is_none() {
+            return VerificationResult {
+                is_valid: false,
+                rejection_reason: REJECTION_NOT_FOUND,
+                message: String::from_str(env, "attestation not found"),
+            };
+        }
+
+        // Check if expired
+        if client.is_expired(&business, &period) {
+            return VerificationResult {
+                is_valid: false,
+                rejection_reason: REJECTION_EXPIRED,
+                message: String::from_str(env, "attestation has expired"),
+            };
+        }
+
+        // Check if revoked
+        if client.is_revoked(&business, &period) {
+            return VerificationResult {
+                is_valid: false,
+                rejection_reason: REJECTION_REVOKED,
+                message: String::from_str(env, "attestation has been revoked"),
+            };
+        }
+
+        // Check for active dispute
+        if Self::get_dispute_status_internal(env, business.clone(), period.clone()) {
+            return VerificationResult {
+                is_valid: false,
+                rejection_reason: REJECTION_DISPUTED,
+                message: String::from_str(env, "attestation is under dispute"),
+            };
+        }
+
+        // Verify merkle root by comparing with stored attestation
+        let (stored_root, _, _, _, _, _) = attestation.unwrap();
+        if stored_root != merkle_root {
+            return VerificationResult {
+                is_valid: false,
+                rejection_reason: REJECTION_ROOT_MISMATCH,
+                message: String::from_str(env, "merkle root mismatch"),
+            };
+        }
+
+        VerificationResult {
+            is_valid: true,
+            rejection_reason: REJECTION_VALID,
+            message: String::from_str(env, "verification successful"),
         }
     }
 
@@ -423,7 +487,8 @@ impl LenderConsumerContract {
     }
 
     /// Get the verified revenue for a business and period.
-    pub fn get_revenue(env: Env, business: Address, period: String) -> Option<i128> {
+    pub fn get_revenue(env: Env, lender: Address, business: Address, period: String) -> Option<i128> {
+        Self::require_lender_tier(&env, &lender, 1);
         env.storage()
             .instance()
             .get(&DataKey::VerifiedRevenue(business, period))
@@ -433,7 +498,8 @@ impl LenderConsumerContract {
     ///
     /// Returns the sum. If a period is missing, it is treated as 0.
     /// This is a "simplified API" for credit models (e.g. "Last 3 months revenue").
-    pub fn get_trailing_revenue(env: Env, business: Address, periods: Vec<String>) -> i128 {
+    pub fn get_trailing_revenue(env: Env, lender: Address, business: Address, periods: Vec<String>) -> i128 {
+        Self::require_lender_tier(&env, &lender, 1);
         let mut sum: i128 = 0;
         for period in periods {
             let rev = env
@@ -447,7 +513,12 @@ impl LenderConsumerContract {
     }
 
     /// Check if a period is marked as an anomaly.
-    pub fn is_anomaly(env: Env, business: Address, period: String) -> bool {
+    pub fn is_anomaly(env: Env, lender: Address, business: Address, period: String) -> bool {
+        Self::require_lender_tier(&env, &lender, 1);
+        Self::is_anomaly_internal(&env, business, period)
+    }
+
+    fn is_anomaly_internal(env: &Env, business: Address, period: String) -> bool {
         env.storage()
             .instance()
             .get(&DataKey::Anomaly(business, period))
@@ -464,7 +535,12 @@ impl LenderConsumerContract {
     }
 
     /// Get the dispute status.
-    pub fn get_dispute_status(env: Env, business: Address, period: String) -> bool {
+    pub fn get_dispute_status(env: Env, lender: Address, business: Address, period: String) -> bool {
+        Self::require_lender_tier(&env, &lender, 1);
+        Self::get_dispute_status_internal(&env, business, period)
+    }
+
+    fn get_dispute_status_internal(env: &Env, business: Address, period: String) -> bool {
         env.storage()
             .instance()
             .get(&DataKey::DisputeStatus(business, period))

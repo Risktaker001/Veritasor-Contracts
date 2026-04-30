@@ -532,6 +532,41 @@ pub fn emit_attestation_migrated(
         .publish((TOPIC_ATTESTATION_MIGRATED, business.clone()), event);
 }
 
+/// Normalized payload for `MultiPeriodIssued` events.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MultiPeriodIssuedEvent {
+    /// Business address that submitted the attestation.
+    pub business: Address,
+    /// Start period (YYYYMM).
+    pub start_period: u32,
+    /// End period (YYYYMM).
+    pub end_period: u32,
+    /// Merkle root hash.
+    pub merkle_root: BytesN<32>,
+}
+
+/// Topic: multi-period attestation issued
+pub const TOPIC_MULTI_PERIOD_ISSUED: Symbol = symbol_short!("mul_iss");
+
+/// Emit a `MultiPeriodIssued` event.
+pub fn emit_multi_period_issued(
+    env: &Env,
+    business: &Address,
+    start_period: u32,
+    end_period: u32,
+    merkle_root: &BytesN<32>,
+) {
+    let event = MultiPeriodIssuedEvent {
+        business: business.clone(),
+        start_period,
+        end_period,
+        merkle_root: merkle_root.clone(),
+    };
+    env.events()
+        .publish((TOPIC_MULTI_PERIOD_ISSUED, business.clone()), event);
+}
+
 // ── Access control ────────────────────────────────────────────────
 
 /// Emit a `RoleGranted` event.
