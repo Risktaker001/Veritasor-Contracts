@@ -581,3 +581,193 @@ fn reorg_resilience_upgrade_after_rollback() {
     assert_eq!(client.get_previous_version(), Some(1u32));
     assert_eq!(client.get_previous_implementation(), Some(impl_v1));
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  Cross-contract address validation tests
+// ════════════════════════════════════════════════════════════════════
+
+#[test]
+fn validate_implementation_returns_true_for_valid_address() {
+    let (_env, client, _admin, _initial_impl) = setup();
+    let new_impl = Address::generate(&_env);
+
+    assert!(client.validate_implementation(&new_impl));
+}
+
+#[test]
+fn validate_implementation_rejects_same_as_current() {
+    let (env, client, _admin, initial_impl) = setup();
+
+    // Cannot upgrade to the same implementation
+    assert!(!client.validate_implementation(&initial_impl));
+}
+
+#[test]
+fn validate_implementation_rejects_admin_address() {
+    let (_env, client, admin, _initial_impl) = setup();
+
+    // Cannot wire the registry to its own admin (prevents circular deps)
+    assert!(!client.validate_implementation(&admin));
+}
+
+#[test]
+fn validate_implementation_always_true_when_uninitialized() {
+    let (env, client) = setup_uninitialized();
+    let candidate = Address::generate(&env);
+
+    assert!(client.validate_implementation(&candidate));
+}
+
+#[test]
+#[should_panic(expected = "invalid implementation address")]
+fn upgrade_to_same_implementation_panics() {
+    let (_env, client, _admin, initial_impl) = setup();
+
+    // Upgrading to the same implementation is now rejected
+    client.upgrade(&initial_impl, &2u32, &None);
+}
+
+#[test]
+#[should_panic(expected = "invalid implementation address")]
+fn upgrade_to_admin_address_panics() {
+    let (_env, client, admin, _initial_impl) = setup();
+
+    // Wiring the registry to the admin is rejected
+    client.upgrade(&admin, &2u32, &None);
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Wrong registry wiring tests
+// ════════════════════════════════════════════════════════════════════
+
+#[test]
+fn initialize_with_same_admin_and_impl_is_allowed() {
+    // Edge case: admin and implementation are the same address at init.
+    // This is technically allowed (admin may self-host initially),
+    // but validate_implementation will catch it on subsequent upgrades.
+    let env = Env::default();
+    env.mock_all_auths();
+    let registry_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &registry_id);
+
+    let shared = Address::generate(&env);
+    client.initialize(&shared, &shared, &1u32);
+
+    assert!(client.is_initialized());
+    assert_eq!(client.get_admin(), Some(shared.clone()));
+    assert_eq!(client.get_current_implementation(), Some(shared));
+}
+
+#[test]
+fn validate_implementation_rejects_after_shared_init() {
+    // After initializing with shared admin/impl, neither address
+    // should pass validate_implementation.
+    let env = Env::default();
+    env.mock_all_auths();
+    let registry_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &registry_id);
+
+    let shared = Address::generate(&env);
+    client.initialize(&shared, &shared, &1u32);
+
+    // Both the shared address and the admin (same address) are rejected
+    assert!(!client.validate_implementation(&shared));
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Circular dependency tests
+// ════════════════════════════════════════════════════════════════════
+
+#[test]
+fn prevent_circular_admin_wiring() {
+    // After transferring admin, the new admin address should be
+    // rejected by validate_implementation to prevent circular wiring.
+    let (env, client, _admin, initial_impl) = setup();
+    let new_admin = Address::generate(&env);
+    let new_impl = Address::generate(&env);
+
+    client.transfer_admin(&new_admin);
+    client.upgrade(&new_impl, &2u32, &None);
+
+    // The new admin should be rejected as an implementation
+    assert!(!client.validate_implementation(&new_admin));
+    // The new impl should be accepted
+    assert!(client.validate_implementation(&initial_impl));
+}
+
+#[test]
+fn admin_transfer_does_not_affect_current_validation() {
+    // Changing admin should not change which impl addresses are rejected.
+    let (env, client, _old_admin, initial_impl) = setup();
+    let new_impl = Address::generate(&env);
+
+    let before = client.validate_implementation(&new_impl);
+
+    let new_admin = Address::generate(&env);
+    client.transfer_admin(&new_admin);
+
+    let after = client.validate_implementation(&new_impl);
+
+    assert_eq!(before, after);
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Read-only query guarantee tests
+// ════════════════════════════════════════════════════════════════════
+
+#[test]
+fn query_functions_are_read_only() {
+    // All query functions should not modify state.
+    let (env, client, admin, initial_impl) = setup();
+
+    // Take snapshots of state
+    let admin_before = client.get_admin();
+    let impl_before = client.get_current_implementation();
+    let version_before = client.get_current_version();
+
+    // Execute all query functions
+    let _ = client.is_initialized();
+    let _ = client.get_previous_implementation();
+    let _ = client.get_previous_version();
+    let _ = client.get_version_info();
+    let _ = client.validate_implementation(&Address::generate(&env));
+
+    // Verify state is unchanged
+    assert_eq!(client.get_admin(), admin_before);
+    assert_eq!(client.get_current_implementation(), impl_before);
+    assert_eq!(client.get_current_version(), version_before);
+}
+
+#[test]
+fn has_attestation_key_is_read_only() {
+    let (env, client, _admin, _initial_impl) = setup();
+    let attester = Address::generate(&env);
+    let key = soroban_sdk::String::from_str(&env, "2024-Q1");
+
+    // Query before
+    let version_before = client.get_current_version();
+
+    // Execute read-only query
+    assert!(!client.has_attestation_key(&attester, &key));
+
+    // Verify state unchanged
+    assert_eq!(client.get_current_version(), version_before);
+}
+
+#[test]
+fn query_functions_do_not_require_auth() {
+    // Query functions should be callable without authorization.
+    let env = Env::default();
+    // Do NOT mock auths — queries should work regardless
+    let registry_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &registry_id);
+
+    // These should not panic even though no auth is set
+    assert!(!client.is_initialized());
+    assert_eq!(client.get_admin(), None);
+    assert_eq!(client.get_current_implementation(), None);
+    assert_eq!(client.get_current_version(), None);
+    assert_eq!(client.get_previous_implementation(), None);
+    assert_eq!(client.get_previous_version(), None);
+    assert_eq!(client.get_version_info(), None);
+}

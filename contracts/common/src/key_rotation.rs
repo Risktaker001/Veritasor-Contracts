@@ -151,6 +151,20 @@ pub const MAX_ROTATION_HISTORY: u32 = 50;
 // ════════════════════════════════════════════════════════════════════
 
 /// Get the rotation configuration. Returns defaults if not explicitly set.
+///
+/// # Returns
+///
+/// A [`RotationConfig`] with the current settings, or the default values
+/// if no custom configuration has been stored.
+///
+/// # Defaults
+///
+/// | Parameter | Default | Approximate Duration |
+/// |---|---|---|
+/// | `timelock_ledgers` | 17,280 | ~24 hours |
+/// | `confirmation_window_ledgers` | 34,560 | ~48 hours |
+/// | `cooldown_ledgers` | 8,640 | ~12 hours |
+/// | `grace_period_ledgers` | 17,280 | ~24 hours |
 pub fn get_rotation_config(env: &Env) -> RotationConfig {
     env.storage()
         .instance()
@@ -165,6 +179,21 @@ pub fn get_rotation_config(env: &Env) -> RotationConfig {
 
 /// Set the rotation configuration. Only callable internally (admin-gated
 /// at the contract level).
+///
+/// # Arguments
+///
+/// * `config` - The new rotation configuration
+///
+/// # Panics
+///
+/// * If `timelock_ledgers` is 0
+/// * If `confirmation_window_ledgers` is 0
+///
+/// # Security
+///
+/// The calling contract must gate this function with admin authorization.
+/// Setting `cooldown_ledgers` or `grace_period_ledgers` to 0 is allowed
+/// but not recommended for production deployments.
 pub fn set_rotation_config(env: &Env, config: &RotationConfig) {
     assert!(
         config.timelock_ledgers > 0,
@@ -188,7 +217,27 @@ pub fn set_rotation_config(env: &Env, config: &RotationConfig) {
 /// The current admin must authorize this call. A pending rotation must
 /// not already exist. The cooldown from the last rotation must have elapsed.
 ///
-/// Returns the `RotationRequest` that was created.
+/// # Arguments
+///
+/// * `current_admin` - The address of the current admin (must authorize)
+/// * `new_admin` - The address of the proposed new admin
+///
+/// # Returns
+///
+/// The [`RotationRequest`] that was created and stored.
+///
+/// # Panics
+///
+/// * If `new_admin` equals `current_admin`
+/// * If a rotation is already pending
+/// * If the rotation cooldown has not elapsed
+///
+/// # Security
+///
+/// Authorization (`require_auth`) for `current_admin` is the caller's
+/// responsibility. This allows the module to be used in different contract
+/// contexts. The calling contract MUST enforce `current_admin.require_auth()`
+/// before invoking this function.
 pub fn propose_rotation(
     env: &Env,
     current_admin: &Address,
@@ -248,7 +297,28 @@ pub fn propose_rotation(
 /// The timelock must have elapsed and the confirmation window must not
 /// have expired.
 ///
-/// Returns the completed `RotationRequest`.
+/// # Arguments
+///
+/// * `new_admin` - The address of the proposed new admin (must authorize)
+///
+/// # Returns
+///
+/// The completed [`RotationRequest`] with status set to `Completed`.
+///
+/// # Panics
+///
+/// * If no pending rotation exists
+/// * If the pending rotation is not in `Pending` status
+/// * If `new_admin` does not match the proposed new admin
+/// * If the timelock has not elapsed
+/// * If the confirmation window has expired
+///
+/// # Security
+///
+/// Authorization (`require_auth`) for `new_admin` is the caller's
+/// responsibility. The calling contract MUST enforce `new_admin.require_auth()`
+/// before invoking this function. This two-party consent model prevents
+/// unilateral key hijacking.
 pub fn confirm_rotation(env: &Env, new_admin: &Address) -> RotationRequest {
     // Note: Auth enforcement (require_auth) is the caller's responsibility.
 
@@ -296,7 +366,25 @@ pub fn confirm_rotation(env: &Env, new_admin: &Address) -> RotationRequest {
 ///
 /// Only the current admin (who proposed the rotation) can cancel.
 ///
-/// Returns the cancelled `RotationRequest`.
+/// # Arguments
+///
+/// * `current_admin` - The address of the current admin (must authorize)
+///
+/// # Returns
+///
+/// The cancelled [`RotationRequest`] with status set to `Cancelled`.
+///
+/// # Panics
+///
+/// * If no pending rotation exists
+/// * If the pending rotation is not in `Pending` status
+/// * If `current_admin` does not match the admin who proposed the rotation
+///
+/// # Security
+///
+/// Authorization (`require_auth`) for `current_admin` is the caller's
+/// responsibility. This allows the admin to respond to suspicious rotation
+/// proposals during the timelock window.
 pub fn cancel_rotation(env: &Env, current_admin: &Address) -> RotationRequest {
     // Note: Auth enforcement (require_auth) is the caller's responsibility.
 
@@ -333,7 +421,28 @@ pub fn cancel_rotation(env: &Env, current_admin: &Address) -> RotationRequest {
 /// itself does **not** enforce multisig — that is the responsibility
 /// of the calling contract's `execute_proposal` handler.
 ///
-/// Returns the completed `RotationRequest`.
+/// # Arguments
+///
+/// * `old_admin` - The address of the current (compromised) admin
+/// * `new_admin` - The address of the recovery admin
+///
+/// # Returns
+///
+/// The completed [`RotationRequest`] with status set to `Completed` and
+/// `is_emergency` set to `true`.
+///
+/// # Panics
+///
+/// * If `new_admin` equals `old_admin`
+///
+/// # Security
+///
+/// **CRITICAL**: This function bypasses the timelock and cooldown. It must
+/// only be callable through a multisig governance path. The calling contract
+/// should enforce threshold approvals before invoking this function.
+///
+/// Any pending planned rotation is cancelled by this call.
+/// Emergency rotations have no grace period for the old admin.
 pub fn emergency_rotate(env: &Env, old_admin: &Address, new_admin: &Address) -> RotationRequest {
     assert!(
         old_admin != new_admin,
@@ -367,6 +476,17 @@ pub fn emergency_rotate(env: &Env, old_admin: &Address, new_admin: &Address) -> 
 // ════════════════════════════════════════════════════════════════════
 
 /// Check whether there is a pending (non-expired) rotation.
+///
+/// # Returns
+///
+/// `true` if a rotation exists in `Pending` status and the current ledger
+/// sequence has not exceeded its `expires_at` value.
+///
+/// # Note
+///
+/// A rotation that exists in storage but has expired will return `false`.
+/// The storage record is not cleaned up automatically; it remains until
+/// overwritten by a new proposal or a new completed rotation.
 pub fn has_pending_rotation(env: &Env) -> bool {
     if let Some(req) = get_pending_rotation(env) {
         req.status == RotationStatus::Pending && env.ledger().sequence() <= req.expires_at
@@ -376,6 +496,17 @@ pub fn has_pending_rotation(env: &Env) -> bool {
 }
 
 /// Get the current pending rotation request, if any.
+///
+/// # Returns
+///
+/// `Some(RotationRequest)` if a pending rotation exists in storage,
+/// `None` otherwise.
+///
+/// # Note
+///
+/// This returns the raw storage record regardless of expiry status.
+/// Use [`has_pending_rotation`] to check if the rotation is still valid
+/// (non-expired).
 pub fn get_pending_rotation(env: &Env) -> Option<RotationRequest> {
     env.storage()
         .instance()
@@ -383,6 +514,16 @@ pub fn get_pending_rotation(env: &Env) -> Option<RotationRequest> {
 }
 
 /// Get the rotation history (most recent last).
+///
+/// # Returns
+///
+/// A [`Vec`] of [`RotationRecord`] entries. Empty if no rotations have
+/// been completed.
+///
+/// # Note
+///
+/// History is trimmed to [`MAX_ROTATION_HISTORY`] entries. Oldest records
+/// are removed when the limit is exceeded.
 pub fn get_rotation_history(env: &Env) -> Vec<RotationRecord> {
     env.storage()
         .instance()
@@ -391,6 +532,11 @@ pub fn get_rotation_history(env: &Env) -> Vec<RotationRecord> {
 }
 
 /// Get the total count of rotations performed.
+///
+/// # Returns
+///
+/// The cumulative number of completed rotations (both planned and emergency).
+/// This counter is never reset, even when history is trimmed.
 pub fn get_rotation_count(env: &Env) -> u32 {
     env.storage()
         .instance()
@@ -399,6 +545,16 @@ pub fn get_rotation_count(env: &Env) -> u32 {
 }
 
 /// Get the ledger sequence of the last completed rotation.
+///
+/// # Returns
+///
+/// The ledger sequence number at which the most recent rotation completed,
+/// or `0` if no rotation has been performed.
+///
+/// # Use
+///
+/// This value is used by [`propose_rotation`] to enforce the cooldown
+/// period between consecutive rotations.
 pub fn get_last_rotation_ledger(env: &Env) -> u32 {
     env.storage()
         .instance()
@@ -408,6 +564,24 @@ pub fn get_last_rotation_ledger(env: &Env) -> u32 {
 
 /// Check if an old admin is still within their grace period.
 /// Emergency rotations have no grace period.
+///
+/// # Arguments
+///
+/// * `admin` - The address to check for grace period eligibility
+///
+/// # Returns
+///
+/// `true` if the address was the `old_admin` in a recent planned rotation
+/// and the current ledger sequence has not exceeded `grace_period_end`.
+///
+/// # Note
+///
+/// Grace periods only apply to planned rotations. Emergency rotations
+/// set `grace_period_end` to the completion ledger, so this function
+/// always returns `false` for emergency-rotated admins.
+///
+/// The function searches rotation history from most recent to oldest,
+/// returning on the first matching record.
 pub fn is_in_grace_period(env: &Env, admin: &Address) -> bool {
     let history = get_rotation_history(env);
     let current_seq = env.ledger().sequence();

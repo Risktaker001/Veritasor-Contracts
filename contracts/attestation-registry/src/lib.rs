@@ -133,6 +133,41 @@ impl AttestationRegistry {
 
     // ── Upgrade functionality ───────────────────────────────────────
 
+    /// Validate that an implementation address is safe to register.
+    ///
+    /// Returns `true` if the address passes basic safety checks:
+    /// - Not the same as the current implementation (avoids pointless upgrades)
+    /// - Not the admin address (prevents accidental self-referential wiring)
+    ///
+    /// Cross-contract validation is limited at the registry layer because
+    /// Soroban does not expose a way to check if an arbitrary `Address`
+    /// is a deployed contract without invoking it. Callers should verify
+    /// the address out-of-band or call `validate_implementation` before
+    /// invoking `upgrade`.
+    pub fn validate_implementation(env: Env, candidate: Address) -> bool {
+        if !Self::is_initialized(env.clone()) {
+            // Not initialized — only check that candidate is non-trivial
+            return true;
+        }
+
+        let current_impl: Option<Address> =
+            env.storage().instance().get(&DataKey::CurrentImplementation);
+        if let Some(current) = current_impl {
+            if candidate == current {
+                return false; // Same as current — not a real upgrade
+            }
+        }
+
+        let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        if let Some(a) = admin {
+            if candidate == a {
+                return false; // Prevents wiring the registry to its own admin
+            }
+        }
+
+        true
+    }
+
     /// Upgrade to a new attestation implementation.
     ///
     /// Updates the current implementation address and version metadata.
@@ -149,19 +184,23 @@ impl AttestationRegistry {
     /// * If registry is not initialized
     /// * If caller is not the admin
     /// * If `new_version` is not greater than current version
-    /// * If `new_impl` is the zero address
+    /// * If `new_impl` is the same as the current implementation (no-op upgrade)
+    /// * If `new_impl` equals the admin address (prevents circular wiring)
     ///
     /// # Safety
     ///
     /// Only the admin (governance) can perform upgrades. The new implementation
-    /// should be thoroughly tested before upgrade.
+    /// should be thoroughly tested before upgrade. Callers should invoke
+    /// `validate_implementation` before calling this function to catch common
+    /// misconfigurations.
     pub fn upgrade(env: Env, new_impl: Address, new_version: u32, _migration_data: Option<Bytes>) {
         Self::require_initialized(&env);
         let _admin = Self::require_admin(&env);
 
-        // Validate new implementation is not zero address
-        // In Soroban, we check by ensuring it's not the default/empty address
-        // For now, we'll rely on the caller to provide valid addresses
+        // Validate new implementation address safety
+        if !Self::validate_implementation(env.clone(), new_impl.clone()) {
+            panic!("invalid implementation address");
+        }
 
         // Validate version is strictly increasing
         let current_version: u32 = env
