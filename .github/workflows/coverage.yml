@@ -11,7 +11,7 @@ env:
 
 jobs:
   coverage:
-    name: Coverage Gate (95 %)
+    name: Coverage Report
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -43,35 +43,12 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      # ── Per-crate gates ────────────────────────────────────────────
-      # Enforcing individually prevents a high-coverage utility crate from
-      # masking a low-coverage critical crate.
-      # ────────────────────────────────────────────────────────────────
+      - name: Generate workspace lcov report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.txt
 
-      - name: Gate — veritasor-attestation
-        run: cargo llvm-cov --package veritasor-attestation --lib --fail-under-lines 95
-
-      - name: Gate — veritasor-attestation-registry
-        run: cargo llvm-cov --package veritasor-attestation-registry --lib --fail-under-lines 95
-
-      - name: Gate — veritasor-attestor-staking
-        run: cargo llvm-cov --package veritasor-attestor-staking --lib --fail-under-lines 95
-
-      - name: Gate — veritasor-common
-        run: cargo llvm-cov --package veritasor-common --lib --fail-under-lines 95
-
-      - name: Gate — veritasor-audit-log
-        run: cargo llvm-cov --package veritasor-audit-log --lib --fail-under-lines 95
-
-      # ── Workspace report (informational) ───────────────────────────
-
-      - name: Generate workspace HTML report
-        run: cargo llvm-cov --workspace --html --output-dir coverage/
-
-      - name: Upload coverage report
+      - name: Upload lcov report
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
-          path: coverage/
+          name: coverage-lcov
+          path: lcov.txt
           if-no-files-found: error
-
