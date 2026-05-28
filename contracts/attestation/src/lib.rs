@@ -539,21 +539,28 @@ impl AttestationContract {
         );
     }
 
-    pub fn update_proof_hash(
+    pub fn extend_expiry(
         env: Env,
-        caller: Address,
         business: Address,
         period: String,
-        proof_hash: Option<BytesN<32>>,
+        new_expiry: u64,
     ) {
-        access_control::require_admin(&env, &caller);
+        business.require_auth();
 
         let key = DataKey::Attestation(business.clone(), period.clone());
-        let (merkle_root, timestamp, version, fee, old_proof_hash, expiry): AttestationData = env
+        let (merkle_root, timestamp, version, fee, proof_hash, old_expiry): AttestationData = env
             .storage()
             .instance()
             .get(&key)
             .expect("attestation not found");
+
+        let current_expiry = old_expiry.unwrap_or(0);
+        if new_expiry <= current_expiry {
+            panic!("new_expiry must be greater than current expiry");
+        }
+        if new_expiry <= timestamp {
+            panic!("new_expiry must be greater than attestation timestamp");
+        }
 
         let data: AttestationData = (
             merkle_root,
@@ -1032,7 +1039,7 @@ impl AttestationContract {
 #[cfg(test)]
 mod batch_submission_test;
 #[cfg(test)]
-mod dao_override_test;
+mod extend_expiry_test;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
