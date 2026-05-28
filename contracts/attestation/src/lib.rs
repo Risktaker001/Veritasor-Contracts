@@ -100,6 +100,14 @@ pub struct BatchAttestationItem {
 /// still covering all practical bulk-submission use cases.
 pub const MAX_BATCH_SIZE: u32 = 25;
 
+/// Maximum number of items allowed in a single batch verification call.
+///
+/// This limit is consistent with the system's pagination max_limit and ensures
+/// that batch verification remains efficient while preventing resource exhaustion.
+/// The limit is set to 30 items, which provides a good balance between efficiency
+/// and practical use cases.
+pub const MAX_BATCH_SIZE_VERIFY: u32 = 30;
+
 #[contract]
 pub struct AttestationContract;
 
@@ -393,6 +401,92 @@ impl AttestationContract {
         } else {
             false
         }
+    }
+
+    /// Verify multiple attestations in a single batch call.
+    ///
+    /// This read-only method accepts a vector of (business, period, merkle_root) tuples
+    /// and returns a parallel vector of boolean results. Each result indicates whether
+    /// the corresponding attestation is valid (exists, root matches, and not revoked).
+    ///
+    /// # Parameters
+    ///
+    /// - `env`: The Soroban environment
+    /// - `items`: A vector of (business, period, merkle_root) tuples to verify
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<bool>` where each boolean at index i corresponds to the verification
+    /// result for items[i]:
+    /// - `true`: Attestation exists, root matches, and is not revoked
+    /// - `false`: Attestation missing, root mismatch, or revoked
+    ///
+    /// # Panics
+    ///
+    /// - Panics with "batch cannot be empty" if the batch is empty
+    /// - Panics with "batch exceeds maximum size" if the batch exceeds 30 items
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let items = vec![
+    ///     (business1, period1, root1),
+    ///     (business2, period2, root2),
+    /// ];
+    /// let results = contract.verify_attestations_batch(env, items);
+    /// assert_eq!(results.len(), 2);
+    /// ```
+    ///
+    /// # Revocation-Aware Verification
+    ///
+    /// The method checks revocation status via `dispute::is_attestation_revoked`.
+    /// A revoked attestation will return `false` even if the root matches.
+    ///
+    /// # Performance
+    ///
+    /// Batch verification is more efficient than individual calls:
+    /// - Reduces transaction overhead by batching multiple verifications
+    /// - Linear time complexity: O(n) for n items
+    /// - No nested loops or quadratic operations
+    ///
+    /// # Security
+    ///
+    /// - Read-only: Does not modify contract state
+    /// - No authorization required: Callable by any address
+    /// - Revocation-aware: All verifications check revocation status
+    /// - Consistent: Uses same logic as `verify_attestation`
+    pub fn verify_attestations_batch(
+        env: Env,
+        items: Vec<(Address, String, BytesN<32>)>,
+    ) -> Vec<bool> {
+        // Input validation: enforce batch size constraints
+        if items.is_empty() {
+            panic!("batch cannot be empty");
+        }
+        if items.len() > MAX_BATCH_SIZE_VERIFY as usize {
+            panic!("batch exceeds maximum size");
+        }
+
+        // Verification loop: process each item and collect results
+        let mut results = Vec::new(&env);
+        for item in items.iter() {
+            let (business, period, provided_root) = item;
+
+            // Retrieve stored attestation data
+            if let Some((stored_root, _, _, _, _, _)) =
+                Self::get_attestation(env.clone(), business.clone(), period.clone())
+            {
+                // Verify: root must match AND attestation must not be revoked
+                let is_valid =
+                    stored_root == *provided_root && !dispute::is_attestation_revoked(&env, &business, &period);
+                results.push_back(is_valid);
+            } else {
+                // Attestation not found: return false
+                results.push_back(false);
+            }
+        }
+
+        results
     }
 
     pub fn submit_attestation_with_metadata(
@@ -1044,3 +1138,6 @@ mod tier_bounds_test;
 mod test;
 #[cfg(test)]
 mod verify_attestation_test;
+#[cfg(test)]
+mod verify_attestations_batch_test;
+
