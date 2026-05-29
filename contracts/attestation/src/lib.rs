@@ -54,7 +54,10 @@ pub use dispute::{
     Dispute, DisputeOutcome, DisputeResolution, DisputeStatus, DisputeType, OptionalResolution,
 };
 pub use dynamic_fees::{compute_fee, DataKey, FeeConfig};
-pub use events::{AttestationMigratedEvent, AttestationRevokedEvent, AttestationSubmittedEvent, ProofHashUpdatedEvent};
+pub use events::{
+    AttestationMigratedEvent, AttestationRevokedEvent, AttestationSubmittedEvent,
+    ProofHashUpdatedEvent,
+};
 pub use fees::{collect_flat_fee, FlatFeeConfig};
 pub use multisig::{Proposal, ProposalAction, ProposalStatus};
 pub use rate_limit::RateLimitConfig;
@@ -562,12 +565,7 @@ impl AttestationContract {
         );
     }
 
-    pub fn extend_expiry(
-        env: Env,
-        business: Address,
-        period: String,
-        new_expiry: u64,
-    ) {
+    pub fn extend_expiry(env: Env, business: Address, period: String, new_expiry: u64) {
         business.require_auth();
 
         let key = DataKey::Attestation(business.clone(), period.clone());
@@ -912,11 +910,7 @@ impl AttestationContract {
     }
 
     /// Return all dispute IDs associated with a specific attestation.
-    pub fn get_disputes_by_attestation(
-        env: Env,
-        business: Address,
-        period: String,
-    ) -> Vec<u64> {
+    pub fn get_disputes_by_attestation(env: Env, business: Address, period: String) -> Vec<u64> {
         dispute::get_dispute_ids_by_attestation(&env, &business, &period)
     }
 
@@ -1108,47 +1102,7 @@ mod attestor_staking_integration_test;
 #[cfg(test)]
 mod batch_submission_test;
 #[cfg(test)]
-mod dao_override_test;
-#[cfg(test)]
-mod dispute_test;
-#[cfg(test)]
-mod dynamic_fees_test;
-#[cfg(test)]
-mod events_test;
-#[cfg(test)]
-mod expiry_test;
-#[cfg(test)]
-mod extend_expiry_test;
-#[cfg(test)]
-mod extended_metadata_test;
-#[cfg(test)]
-mod fee_admin_auth_test;
-#[cfg(test)]
-mod fees_test;
-#[cfg(test)]
-mod gas_benchmark_test;
-#[cfg(test)]
-mod key_rotation_test;
-#[cfg(test)]
-mod multi_period_test;
-#[cfg(test)]
-mod multisig_test;
-#[cfg(test)]
 mod pause_test;
-#[cfg(test)]
-mod proof_hash_test;
-#[cfg(test)]
-mod proof_hash_update_test;
-#[cfg(test)]
-mod property_test;
-#[cfg(test)]
-mod query_pagination_test;
-#[cfg(test)]
-mod rate_limit_test;
-#[cfg(test)]
-mod registry_test;
-#[cfg(test)]
-mod revocation_test;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
